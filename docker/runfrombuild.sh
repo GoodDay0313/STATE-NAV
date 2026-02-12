@@ -1,6 +1,7 @@
 #!/bin/bash
-IMAGE_NAME="twoleggedcoffeedrinker/state_nav:latest"
+IMAGE_NAME="twoleggedcoffeedrinker/state_nav:LaMa"
 HOST_HOME_DIR=$HOME
+# HOST_HOME_DIR=/home/lidar # Change this to your home directory
 catkin_ws="$HOST_HOME_DIR/Desktop/Ziwon_Project/ros1_ws" # Change this to your catkin workspace directory
 
 # Define environment variables for enabling graphical output for the container.

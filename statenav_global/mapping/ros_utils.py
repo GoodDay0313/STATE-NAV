@@ -1,12 +1,27 @@
 """
-ROS utilities for mapping module.
-Contains ROS message publishing functions for traversability maps.
+ROS2 utilities for mapping module.
+Contains ROS2 message publishing functions for traversability maps.
 """
 
 import numpy as np
-import rospy
 from std_msgs.msg import Float32MultiArray, MultiArrayLayout, MultiArrayDimension
 from grid_map_msgs.msg import GridMap
+
+
+def _log_warning(msg, node=None):
+    """Helper function for logging warnings (compatible with ROS2 or print)."""
+    if node is not None:
+        node.get_logger().warning(msg)
+    else:
+        print(f"[WARN] {msg}")
+
+
+def _log_info(msg, node=None):
+    """Helper function for logging info (compatible with ROS2 or print)."""
+    if node is not None:
+        node.get_logger().info(msg)
+    else:
+        print(f"[INFO] {msg}")
 
 
 def _calculate_costmap_region(global_map, pub_locally, global_planner, step_T, horizon_multiplier, MPC_horizon):
@@ -51,19 +66,20 @@ def _calculate_costmap_region(global_map, pub_locally, global_planner, step_T, h
 
 
 def publish_costmap_float32multiarray(global_map, frame_id, global_costmap_pub, pub_locally, global_planner,
-                                       step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon):
+                                       step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon, node=None):
     """
     Publish costmap using Float32MultiArray (original method).
-    
+
     Args:
         global_map: Map instance (BaseMap or subclass)
         frame_id: ROS frame ID
-        global_costmap_pub: ROS publisher for costmap
+        global_costmap_pub: ROS2 publisher for costmap
         pub_locally: If True, publish only local region around robot/waypoint
         global_planner: Optional planner instance for waypoint calculation
         step_T: Time step
         localmap_getwaypoint_horizonmultiplier: Horizon multiplier for waypoint
         MPC_horizon: MPC horizon length
+        node: ROS2 node instance (optional, for logging)
     """
     row_xmin, row_xmax, col_ymin, col_ymax, xmin_p, xmax_p, ymin_p, ymax_p = _calculate_costmap_region(
         global_map, pub_locally, global_planner, step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon
@@ -86,19 +102,20 @@ def publish_costmap_float32multiarray(global_map, frame_id, global_costmap_pub, 
 
 
 def publish_costmap_gridmap(global_map, frame_id, global_costmap_pub, pub_locally, global_planner,
-                            step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon):
+                            step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon, node=None):
     """
     Publish costmap using GridMap message type.
-    
+
     Args:
         global_map: Map instance (BaseMap or subclass)
         frame_id: ROS frame ID
-        global_costmap_pub: ROS publisher for costmap
+        global_costmap_pub: ROS2 publisher for costmap
         pub_locally: If True, publish only local region around robot/waypoint
         global_planner: Optional planner instance for waypoint calculation
         step_T: Time step
         localmap_getwaypoint_horizonmultiplier: Horizon multiplier for waypoint
         MPC_horizon: MPC horizon length
+        node: ROS2 node instance (required for time stamps)
     """
     row_xmin, row_xmax, col_ymin, col_ymax, xmin_p, xmax_p, ymin_p, ymax_p = _calculate_costmap_region(
         global_map, pub_locally, global_planner, step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon
@@ -108,7 +125,8 @@ def publish_costmap_gridmap(global_map, frame_id, global_costmap_pub, pub_locall
     
     grid_map_msg = GridMap()
     grid_map_msg.info.header.frame_id = frame_id
-    grid_map_msg.info.header.stamp = rospy.Time.now()
+    if node is not None:
+        grid_map_msg.info.header.stamp = node.get_clock().now().to_msg()
     grid_map_msg.info.resolution = global_map.map_resolution
     grid_map_msg.info.length_x = xmax_p - xmin_p
     grid_map_msg.info.length_y = ymax_p - ymin_p
@@ -160,10 +178,10 @@ def publish_costmap_gridmap(global_map, frame_id, global_costmap_pub, pub_locall
     global_costmap_pub.publish(grid_map_msg)
 
 
-def populate_map_from_float32multiarray(global_map, msg):
+def populate_map_from_float32multiarray(global_map, msg, node=None):
     """Populate existing map object from Float32MultiArray message."""
     if len(msg.data) < 8:
-        rospy.logwarn("[PathPlanner] Map message too short, skipping")
+        _log_warning("[PathPlanner] Map message too short, skipping", node)
         return False
         
     data = msg.data
@@ -193,7 +211,7 @@ def populate_map_from_float32multiarray(global_map, msg):
     actual_size = len(data) - idx
     
     if actual_size < expected_size:
-        rospy.logwarn(f"[PathPlanner] Map data incomplete. Expected {expected_size}, got {actual_size}")
+        _log_warning(f"[PathPlanner] Map data incomplete. Expected {expected_size}, got {actual_size}", node)
         return False
     
     # Reshape data into 4D array [rows, cols, theta_layers, 4_channels]
@@ -206,11 +224,11 @@ def populate_map_from_float32multiarray(global_map, msg):
     )
     
     global_map.is_TraversabilityMap_built = True # Avoiding unnecessary initialization of the map. Assuming the map metadata does not change.
-    # rospy.loginfo(f"Map updated: {global_map.TraversabilityMap_size_rows}x{global_map.TraversabilityMap_size_cols}x{global_map.TraversabilityMap_size_layers}")
+    # _log_info(f"Map updated: {global_map.TraversabilityMap_size_rows}x{global_map.TraversabilityMap_size_cols}x{global_map.TraversabilityMap_size_layers}", node)
     return True
 
 
-def populate_map_from_gridmap(global_map, msg):
+def populate_map_from_gridmap(global_map, msg, node=None):
     """Populate existing map object from GridMap message."""
     # Extract metadata from GridMap info
     global_map.map_resolution = msg.info.resolution
@@ -228,12 +246,12 @@ def populate_map_from_gridmap(global_map, msg):
     
     # Get dimensions from first layer
     if len(msg.layers) == 0 or len(msg.data) == 0:
-        rospy.logwarn("[PathPlanner] GridMap has no layers")
+        _log_warning("[PathPlanner] GridMap has no layers", node)
         return False
-    
+
     first_layer = msg.data[0]
     if len(first_layer.layout.dim) < 2:
-        rospy.logwarn("[PathPlanner] GridMap layer has insufficient dimensions")
+        _log_warning("[PathPlanner] GridMap layer has insufficient dimensions", node)
         return False
     
     # Note: GridMap uses column_index, row_index order
@@ -281,7 +299,7 @@ def populate_map_from_gridmap(global_map, msg):
                 theta_resolution = (theta_max - theta_min) / (num_theta_layers - 1) if num_theta_layers > 1 else np.pi / 4
     
     if num_theta_layers is None:
-        rospy.logwarn("[PathPlanner] Could not determine number of theta layers, defaulting to 8")
+        _log_warning("[PathPlanner] Could not determine number of theta layers, defaulting to 8", node)
         num_theta_layers = 8
         theta_min = -np.pi
         theta_max = np.pi - np.pi/4
@@ -316,10 +334,10 @@ def populate_map_from_gridmap(global_map, msg):
                     global_map.TraversabilityMap[:, :, theta_layer, channel_idx] = layer_data_reshaped
                     layer_idx += 1
                 else:
-                    rospy.logwarn(f"[PathPlanner] Expected layer {layer_name}, got {msg.layers[layer_idx]}")
+                    _log_warning(f"[PathPlanner] Expected layer {layer_name}, got {msg.layers[layer_idx]}", node)
                     layer_idx += 1
-    
+
     global_map.is_TraversabilityMap_built = True
-    # rospy.loginfo(f"Map updated from GridMap: {num_rows}x{num_cols}x{num_theta_layers}")
+    # _log_info(f"Map updated from GridMap: {num_rows}x{num_cols}x{num_theta_layers}", node)
     return True
 

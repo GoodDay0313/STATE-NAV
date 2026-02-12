@@ -6,10 +6,17 @@
 from __future__ import annotations
 
 import os
+import sys
 from typing import Tuple, List, Dict, Any, Optional
 
 import torch
 from omegaconf import OmegaConf
+
+# Add the 'lama' directory to the Python path so 'saicinpainting' is directly importable
+_current_dir = os.path.dirname(os.path.abspath(__file__))
+_lama_dir = os.path.join(_current_dir, 'lama')
+if _lama_dir not in sys.path:
+    sys.path.insert(0, _lama_dir)
 
 from saicinpainting.training.modules import make_generator
 

@@ -4,6 +4,8 @@ import os
 import datetime
 import math
 import random
+import matplotlib
+matplotlib.use('QtAgg')  # Use Qt backend
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from enum import IntEnum
@@ -57,8 +59,17 @@ RRT_getwaypoint_steps = cfg.RRT_getwaypoint_steps
 
 
 
+# Check if Times New Roman font is available, fallback to default serif if not
+import os
 font_path = "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf"
-times_new_roman = fm.FontProperties(fname=font_path)
+if os.path.exists(font_path):
+    times_new_roman = fm.FontProperties(fname=font_path)
+    use_times = True
+else:
+    # Rebuild font cache to ensure matplotlib doesn't try to use unavailable fonts
+    fm._load_fontmanager(try_read_cache=False)
+    times_new_roman = fm.FontProperties(family='serif')
+    use_times = False
 
 FS_TICK: int = 15
 FS_LABEL: int = 15
@@ -73,9 +84,8 @@ RC_PARAMS: dict = {
     'axes.linewidth': 2,
     'xtick.color': 'black',
     'ytick.color': 'black',
-    "font.family": "Times New Roman",
     "font.family": 'serif',
-    "font.serif": "Times New Roman",
+    "font.serif": ["DejaVu Serif", "Liberation Serif", "Nimbus Roman"],  # Use available system fonts
 }
 savefigureonce_elevmap = cfg.savemap
 savefigureonce_travmap = cfg.savemap
@@ -732,7 +742,7 @@ class BaseMap:
 
             theta_to_goal = np.arctan2(self.goal_y - self.robot_y, self.goal_x - self.robot_x)
             theta_robot = Utils.wrap_to_pi(self.robot_heading)
-            if visualize_map:
+            if visualize_map and self.is_TraversabilityMap_built:
                 self.visualize_maps(theta_robot, path_plan)
 
 

@@ -10,7 +10,7 @@ Architecture:
 - True parallel execution (no context switching overhead)
 
 Usage:
-    rosrun state_nav main_multiprocess.py
+    ros2 run statenav_global multiprocess
 """
 
 import multiprocessing as mp
@@ -63,51 +63,61 @@ class SharedMetadata:
 def world_model_worker(shared_metadata, shared_backend_config):
     """
     Worker function for WorldModel process (writer)
-    
+
     Args:
         shared_metadata: SharedMetadata object (mp.Value, mp.Lock) - shared with planner
         shared_backend_config: Dict with backend configuration
     """
-    import rospy
-    from main_worldmodel import WorldModelNode
-    
-    # Initialize ROS node in THIS process FIRST
-    rospy.init_node('WorldModel_Node', anonymous=True)
-    rospy.loginfo("[WorldModel] WorldModel process started (PID: %d)", mp.current_process().pid)
-    
-    # Use WorldModelNode from main_worldmodel with shared metadata
-    # Pass init_ros=False since we already initialized ROS above
-    world_model_node = WorldModelNode(shared_metadata=shared_metadata, init_ros=False)
-    
-    # Run world model node
-    world_model_node.run()
-    
-    rospy.loginfo("[WorldModel] WorldModel process shutting down")
+    import rclpy
+    from executables.main_worldmodel import WorldModelNode
+
+    # Initialize ROS2 in THIS process
+    rclpy.init()
+    world_model_node = None  # Initialize to handle creation failures
+
+    try:
+        # Create WorldModelNode with shared metadata
+        # Note: ROS2 nodes always initialize via __init__, no init_ros parameter
+        world_model_node = WorldModelNode(shared_metadata=shared_metadata)
+        world_model_node.get_logger().info(f"[WorldModel] WorldModel process started (PID: {mp.current_process().pid})")
+
+        # Run world model node
+        world_model_node.run()
+    finally:
+        if world_model_node is not None:
+            world_model_node.get_logger().info("[WorldModel] WorldModel process shutting down")
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def planner_worker(shared_metadata, shared_backend_config):
     """
     Worker function for Planner process (reader)
-    
+
     Args:
         shared_metadata: SharedMetadata object (mp.Value, mp.Lock) - shared with writer
         shared_backend_config: Dict with backend configuration
     """
-    import rospy
-    from main_global_planning import PlanningNode
-    
-    # Initialize ROS node in THIS process FIRST
-    rospy.init_node('Planner_Node', anonymous=True)
-    rospy.loginfo("[PathPlanner] Planner process started (PID: %d)", mp.current_process().pid)
-    
-    # Use PlanningNode from main_global_planning with shared metadata
-    # Pass init_ros=False since we already initialized ROS above
-    planning_node = PlanningNode(shared_metadata=shared_metadata, init_ros=False)
-    
-    # Run planning node
-    planning_node.run()
-    
-    rospy.loginfo("[PathPlanner] Planner process shutting down")
+    import rclpy
+    from executables.main_global_planning import PlanningNode
+
+    # Initialize ROS2 in THIS process
+    rclpy.init()
+    planning_node = None  # Initialize to handle creation failures
+
+    try:
+        # Create PlanningNode with shared metadata
+        # Note: ROS2 nodes always initialize via __init__, no init_ros parameter
+        planning_node = PlanningNode(shared_metadata=shared_metadata)
+        planning_node.get_logger().info(f"[Planner] Planner process started (PID: {mp.current_process().pid})")
+
+        # Run planner node
+        planning_node.run()
+    finally:
+        if planning_node is not None:
+            planning_node.get_logger().info("[Planner] Planner process shutting down")
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def create_shared_metadata():

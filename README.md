@@ -60,8 +60,8 @@ ROS2 version will be supported soon.
 Clone the repo:
 
 ```zsh
-cd $(path_to_your_catkin_workspace)/src
-git clone 
+cd $(path_to_your_ros2_workspace)/src
+git clone
 ```
 
 ### Easy: Prebuilt Docker Image ###
@@ -79,7 +79,7 @@ Second, install nvidia container toolkit: https://docs.nvidia.com/datacenter/clo
 #### Building an Image
 
 ```zsh
-cd $(path_to_your_catkin_workspace)/src/state_nav/docker
+cd $(path_to_your_ros2_workspace)/src/state_nav/docker
 docker build -f Dockerfile.x64 -t biped_nav_sim .
 # You might need to change the image name in `runfrombuild.sh`
 ```
@@ -89,7 +89,7 @@ docker build -f Dockerfile.x64 -t biped_nav_sim .
 After building, open a container.
 
 **********Caution***********
-Make sure to change the line 3 in your `runfrombuild.sh` for path to your home directory and catkin ws.
+Make sure to change the line 3 in your `runfrombuild.sh` for path to your home directory and ROS2 workspace.
 * When reopening container throws an error for XAUTH, delete your /tmp/.X11-unix and /tmp/.docker.xauth and then running ./runfrombuild would work. Running ./runfrombuild with sudo might potentially cause a problem for setting home directory.
 
 ```zsh
@@ -106,12 +106,12 @@ After opening an container, open an interactive shell in the container.
 
 Run the following. You should be in the container's filesystem.
 ```zsh
-. $HOST_HOME_DIR/$(path_to_your_catkin_workspace)/src/state_nav/docker/startup.sh
+. $HOST_HOME_DIR/$(path_to_your_ros2_workspace)/src/state_nav/docker/startup.sh
 ```
 
-This will build ROS package. Now you are good to go.
-Keep in mind that what happend in `startup.sh` is only valid in this specific container. If you open a new container, you have to do the same thing again.
-Also, when you do ROS build in a docker container, it might conflict if you do ROS build outside of the container. 
+This will build ROS2 package. Now you are good to go.
+Keep in mind that this build is only valid in this specific container. If you open a new container, you have to do the same thing again.
+Also, when you do ROS2 build in a docker container, it might conflict if you do ROS2 build outside of the container. 
 
 
 
@@ -134,19 +134,31 @@ Run the followings in separate shells.
 
 (1) Modify `executables/configs/planning_config.yaml` as you want. 
 
-(2) Run `rosrun state_nav main_traversability_estimation.py` for traversability estimation.
+(2) `ros2 run statenav_global traversability_estimation`
 
     # Launches the traversability estimation node that converts elevation map to traversability map.
     # Computes stability-aware traversability maps using the TravFormer neural network.
     # This node publishes costmaps that indicate safe navigation regions for the bipedal robot.
 
-(3) `rosrun state_nav main_global_planning.py` if you want TravRRT* to do planning. This is optional if you don't need a path plan.
+(3) `ros2 run statenav_global global_planning`
 
     # Launches the global path planning node that uses TravRRT* to compute optimal paths
     # based on the traversability maps. This node subscribes to costmaps and robot pose,
     # then publishes planned paths for navigation.
 
+(4) `ros2 bag play $(path_to_your_ros2_workspace)/src/state_nav/ROS/1017_2.bag`
 
+    # Plays back recorded sensor data (camera pointcloud, elevation map, path plan, etc.) from a rosbag file.
+    # It is recording of one of our outdoor experiments.
+    # Note: ROS1 bags need to be converted to ROS2 format first using ros1_bridge.
+    # Replace $(path_to_your_ros2_workspace) with your actual ROS2 workspace path.
+
+(5) `rviz2 -d $(path_to_your_ros2_workspace)/src/state_nav/ROS/rviz_setting.rviz`
+
+    # Launches RViz2 visualization tool with a pre-configured setup to visualize
+    # the traversability maps, planned paths, robot pose, and other ROS2 topics.
+    # Note: The RViz config file may need to be updated for ROS2 compatibility.
+    # Replace $(path_to_your_ros2_workspace) with your actual ROS2 workspace path.
 
 ## Acknowledgments
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from time import time, sleep
 import numpy as np
 import torch
@@ -41,8 +42,8 @@ cfg = OmegaConf.load(PathLib(__file__).parents[0] / "configs/planning_config.yam
 
 
 
-def publish_costmap_float32multiarray(global_map, frame_id, global_costmap_pub, pub_locally, global_planner, 
-                                       step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon):
+def publish_costmap_float32multiarray(global_map, frame_id, global_costmap_pub, pub_locally, global_planner,
+                                       step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon, node=None):
     """
     Publish costmap using Float32MultiArray (original method).
     """
@@ -172,8 +173,8 @@ def publish_costmap_gridmap(global_map, frame_id, global_costmap_pub, pub_locall
 
     # Initialize GridMap message
     grid_map_msg = GridMap()
-    grid_map_msg.info.header.frame_id = frame_id
-    grid_map_msg.info.header.stamp = node.get_clock().now().to_msg()
+    grid_map_msg.header.frame_id = frame_id
+    grid_map_msg.header.stamp = node.get_clock().now().to_msg()
 
     # Set GridMap metadata
     grid_map_msg.info.resolution = global_map.map_resolution
@@ -447,7 +448,7 @@ def main():
                                             step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon, node=node)
                 else:
                     publish_costmap_float32multiarray(global_map, frame_id, global_costmap_pub, pub_locally, global_planner,
-                                                    step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon)
+                                                    step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon, node=node)
 
 
 

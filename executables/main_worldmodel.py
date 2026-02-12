@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import numpy as np
 import os
 import math
@@ -8,7 +9,9 @@ from statenav_global.mapping import *
 import statenav_global.mapping.WorldModel as WorldModel
 from statenav_global.mapping.ros_utils import publish_costmap_float32multiarray, publish_costmap_gridmap
 
-import rospy
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Float32MultiArray, Bool
@@ -22,15 +25,15 @@ warnings.simplefilter(action='ignore', category=RuntimeWarning)
 cfg = OmegaConf.load(PathLib(__file__).parents[0] / "configs/planning_config.yaml")
 
 
-class WorldModelNode:
+class WorldModelNode(Node):
     """
     WorldModelNode manages WorldModel, map updates, and optionally global planning.
-    
+
     Architecture:
     - WorldModel runs in THIS process (writer) - updates maps in shared memory
     - Planner runs in SEPARATE process (reader) - reads maps from shared memory
     - Communication: Shared memory (maps) + ROS topics (coordination)
-    
+
     Can run in three modes:
     1. Parent-spawning: shared_metadata provided (multiprocessing)
     2. Named shared memory: use_shared_memory=True, shared_metadata=None
@@ -41,17 +44,16 @@ class WorldModelNode:
     2. Map + Planning: do_RRT_globalplanning=True (map updates + RRT* planning)
     """
 
-    def __init__(self, shared_metadata=None, init_ros=True, use_shared_memory=None):
+    def __init__(self, shared_metadata=None, use_shared_memory=None):
         """
         Args:
             shared_metadata: Optional SharedMetadata object from parent process.
                            If provided, uses shared memory with parent-spawning approach.
                            If None, uses config or use_shared_memory parameter.
-            init_ros: If True, initialize ROS node. If False, assume ROS is already initialized.
-                     Useful when called from multiprocessing workers.
             use_shared_memory: If True, uses shared memory backend. If False, uses local memory.
                               If None, reads from config file or defaults to True if shared_metadata provided.
         """
+        super().__init__('worldmodel_node')
 
         os.nice(-10)
         
@@ -81,11 +83,7 @@ class WorldModelNode:
         self.heading_start = np.deg2rad(self.cfg.heading_start)
         self.initialization_time = self.cfg.initialization_time
         self.debugging_visualization = self.cfg.debugging_visualization
-        
-        # Initialize ROS
-        self._init_ros(init_ros)
-        self.init_clock = None
-        
+
         # Determine shared memory mode
         self.use_shared_memory = use_shared_memory if use_shared_memory is not None else (
             True if shared_metadata is not None else self.cfg.get('use_shared_memory', False)
@@ -100,53 +98,54 @@ class WorldModelNode:
         
         # Initialize planner (if enabled)
         self._init_planner()
-        
-        rospy.loginfo(f"[WorldModel] WorldModelNode initialized {'with' if self.use_shared_memory else 'without'} shared memory")
 
 
 
 
 
 ####################################### INITIALIZATION #######################################
-    def _init_ros(self, init_ros):
-        """Initialize ROS node."""
-        if init_ros or not rospy.get_node_uri():
-            rospy.init_node('WorldModelRunning', anonymous=True)
-        rospy.loginfo("[WorldModel] WorldModelNode initialized")
 
     def _init_map_and_worldmodel(self, shared_metadata):
         """Initialize map and world model based on shared memory mode."""
         if shared_metadata is not None:
-            rospy.loginfo("[WorldModel] Initializing WorldModel with shared memory (parent-spawning)")
+            self.get_logger().info("[WorldModel] Initializing WorldModel with shared memory (parent-spawning)")
             self.world_model = WorldModel.WorldModel(use_shared_memory=True, shared_metadata=shared_metadata)
         elif self.use_shared_memory:
-            rospy.loginfo("[WorldModel] Initializing WorldModel with shared memory (named)")
+            self.get_logger().info("[WorldModel] Initializing WorldModel with shared memory (named)")
             self.world_model = WorldModel.WorldModel(use_shared_memory=True)
         else:
-            rospy.loginfo("[WorldModel] Initializing map without shared memory (direct creation)")
+            self.get_logger().info("[WorldModel] Initializing map without shared memory (direct creation)")
             self.world_model = WorldModel.WorldModel(use_shared_memory=False)
             # Map is created by WorldModel.create_map_from_config() in __init__
 
     def _setup_ros_communication(self):
-        """Setup ROS subscribers and publishers."""
+        """Setup ROS2 subscribers and publishers."""
+        # QoS profile for subscribers
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+
         # Subscribers
-        rospy.Subscriber("/robot/pose", PoseStamped, self.world_model.global_map.pose_callback, queue_size=1)
-        rospy.Subscriber("/elevation_mapping/elevation_map_filter", GridMap,
-                        self.world_model.global_map.robo_centric_map_callback, queue_size=1)
-        
+        self.create_subscription(PoseStamped, "/robot/pose",
+                                self.world_model.global_map.pose_callback, qos_profile)
+        self.create_subscription(GridMap, "/elevation_mapping/elevation_map_filter",
+                                self.world_model.global_map.robo_centric_map_callback, qos_profile)
+
         # Publishers
         # Replanning signal publisher (for notifying planner when replanning is needed)
-        self.replanning_signal_pub = rospy.Publisher("/replanning_signal", Bool, queue_size=1)
+        self.replanning_signal_pub = self.create_publisher(Bool, "/replanning_signal", qos_profile)
         self.use_gridmap_msg = self.cfg.get('use_gridmap_msg', False)
         self.frame_id = self.cfg.frame_id
-        
+
         if not self.use_shared_memory:
             msg_type = GridMap if self.use_gridmap_msg else Float32MultiArray
-            self.global_costmap_pub = rospy.Publisher("/global_costmap", msg_type, queue_size=1)
-            rospy.loginfo(f"[WorldModel] Using {'GridMap' if self.use_gridmap_msg else 'Float32MultiArray'} for costmap publishing")
-        
-        self.global_path_pub = rospy.Publisher("/global_path", Path, queue_size=1)
-        self.StaticObs_list_pub = rospy.Publisher("/StaticObs_list", Float32MultiArray, queue_size=1)
+            self.global_costmap_pub = self.create_publisher(msg_type, "/global_costmap", qos_profile)
+            self.get_logger().info(f"[WorldModel] Using {'GridMap' if self.use_gridmap_msg else 'Float32MultiArray'} for costmap publishing")
+
+        self.global_path_pub = self.create_publisher(Path, "/global_path", qos_profile)
+        self.StaticObs_list_pub = self.create_publisher(Float32MultiArray, "/StaticObs_list", qos_profile)
 
     def _init_planner(self):
         """Initialize global planner if enabled."""
@@ -188,9 +187,9 @@ class WorldModelNode:
                 robot_radius=0.3
             )
             self.global_planner.global_map = self.world_model.global_map
-            rospy.loginfo("[WorldModel] Initialized planner GlobalRRTStar")
+            self.get_logger().info("[WorldModel] Initialized planner GlobalRRTStar")
         else:
-            rospy.loginfo("[WorldModel] Global planning disabled")
+            self.get_logger().info("[WorldModel] Global planning disabled")
 
 
 
@@ -222,9 +221,7 @@ class WorldModelNode:
             RRT_getwaypoint_steps=self.RRT_getwaypoint_steps,
             plot_map=True
         )
-        
-        # Debug output
-        rospy.loginfo(f"[WorldModel] Planner cost: {self.global_planner.cost(self.global_planner.s_goal)}")
+ 
 
 ####################################### PUBLISH  #######################################
     def _publish_costmap(self):
@@ -233,7 +230,8 @@ class WorldModelNode:
         publish_func(
             self.world_model.global_map, self.frame_id, self.global_costmap_pub,
             self.pub_locally, self.global_planner,
-            self.step_T, self.localmap_getwaypoint_horizonmultiplier, self.MPC_horizon
+            self.step_T, self.localmap_getwaypoint_horizonmultiplier, self.MPC_horizon,
+            node=self
         )
 
     def _publish_StaticObs_list(self):
@@ -247,10 +245,10 @@ class WorldModelNode:
         """Publish global path if planner is enabled."""
         if not (self.do_RRT_globalplanning and not self.asynchronous_globalplanning and self.global_planner):
             return
-        
+
         path_msg = Path()
         path_msg.header.frame_id = self.frame_id
-        path_msg.header.stamp = rospy.Time.now()
+        path_msg.header.stamp = self.get_clock().now().to_msg()
         
         for pt in self.global_planner.path:
             pose = PoseStamped()
@@ -265,7 +263,9 @@ class WorldModelNode:
     def _handle_replanning_signals(self):
         """Handle replanning signals via ROS topic."""
         if self.world_model.send_replanning:
-            self.replanning_signal_pub.publish(Bool(True))
+            msg = Bool()
+            msg.data = True
+            self.replanning_signal_pub.publish(msg)
             self.world_model.send_replanning = False
 
 
@@ -281,20 +281,35 @@ class WorldModelNode:
 ####################################### RUN #######################################
     def run(self):
         """Main execution loop."""
-        rate = rospy.Rate(1)
-        rospy.loginfo("[WorldModel] WorldModelNode running. Waiting for map data...")
-        
+        rate = self.create_rate(1)
+        self.get_logger().info("[WorldModel] WorldModelNode running. Waiting for map data...")
+
+        # Initialize throttle timers for logging
+        self._last_loop_log_time = 0.0
+        self._last_rostime_log_time = 0.0
+
         count = 0
-        while not rospy.is_shutdown():
+        while rclpy.ok():
             count += 1
-            rospy.loginfo_throttle(1.0, "[WorldModel] \n==================================== LOOP ====================================")
-            rospy.loginfo_throttle(1.0, "[WorldModel] ROSPY in loop. ROSTime is, %f and count is %d", rospy.get_time(), count)
-            
+            current_time = self.get_clock().now().nanoseconds / 1e9
+
+            # Throttled logging
+            if current_time - self._last_loop_log_time > 1.0:
+                self.get_logger().info("[WorldModel] \n==================================== LOOP ====================================")
+                self._last_loop_log_time = current_time
+
+            if current_time - self._last_rostime_log_time > 1.0:
+                self.get_logger().info("[WorldModel] RCLPY in loop. Time is %.2f and count is %d" % (current_time, count))
+                self._last_rostime_log_time = current_time
+
             try:
-                if rospy.get_time() > self.initialization_time:
+                if current_time > self.initialization_time:
                     if self.init_clock is None:
-                        self.init_clock = rospy.get_time()
-                    
+                        self.init_clock = current_time
+
+
+
+
 
 
 
@@ -318,9 +333,9 @@ class WorldModelNode:
                     self._handle_replanning_signals()
                 
             except Exception as e:
-                rospy.logerr(f"[WorldModel] Error in WorldModelNode run loop: {e}")
+                self.get_logger().error(f"[WorldModel] Error in WorldModelNode run loop: {e}")
                 import traceback
-                rospy.logerr(f"[WorldModel] {traceback.format_exc()}")
+                self.get_logger().error(f"[WorldModel] {traceback.format_exc()}")
             
             rate.sleep()
 
@@ -328,14 +343,18 @@ class WorldModelNode:
 
 ####################################### MAIN #######################################
 def main():
+    rclpy.init()
+    node = None  # Initialize to None to handle initialization failures
     try:
         node = WorldModelNode()
         node.run()
-    except rospy.ROSInterruptException:
+    except KeyboardInterrupt:
         pass
     finally:
-        rospy.loginfo("[WorldModel] WorldModelNode shutting down")
-        rospy.signal_shutdown("Finished execution")
+        if node is not None:
+            node.get_logger().info("[WorldModel] WorldModelNode shutting down")
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
