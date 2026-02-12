@@ -1,37 +1,49 @@
-from typing import List
-from . import BasePlanner
 
+
+
+import time
 import os
 import sys
 import math
 import numpy as np
 from collections import deque
+from typing import List, Tuple
 
-file_path = os.path.abspath(__file__)
-dir_path = os.path.dirname(file_path)
-RRTSTar_package_path = dir_path + "/RRTStar_package"
-sys.path.append(RRTSTar_package_path)
-
-import plotting
-import utils
-import time
+from . import BasePlanner
+from statenav_global.utility import plotting
+from statenav_global.utility import utils
 
 
 def wrap_to_pi(angle):
     """Wraps an angle to the range [-π, π] using atan2."""
     return np.arctan2(np.sin(angle), np.cos(angle))
 
-class Node:
+# Large integer to represent invalid node index (instead of float('inf'))
+INVALID_NODE_IDX = np.iinfo(np.int32).max
+
+class Node(utils.BasicNode):
     def __init__(self, n):
         self.x = n[0]
         self.y = n[1]
 
         self.__cost_trav = 0
         self.__parent = None
+        self.__index = None # index of a node = index in self.vertex. index = i -> node = self.vertex[i]
 
-    def set_parent_and_cost(self, parent, cost_trav):
+    def set_parent_and_cost(self, parent, cost_trav, index = None):
         self.__parent = parent
         self.__cost_trav = cost_trav
+        if index is not None:
+            self.__index = index
+
+    def set_index(self, index):
+        self.__index = index
+
+    def get_index(self):
+        return self.__index
+
+    def reset_index(self):
+        self.__index = None
 
     def get_parent(self):
         return self.__parent
@@ -76,6 +88,7 @@ class GlobalRRTStar(BasePlanner):
         self.s_goal = Node(x_goal)
         self.heading_start = heading_start
         self.vertex = [self.s_start]
+        self.s_start.set_index(0)
         self.path = []
 
         self.branch_length_max = branch_length_max
@@ -124,10 +137,8 @@ class GlobalRRTStar(BasePlanner):
             print(" Already Reached. No need to plan.")
             print(" Start Node is: ", self.s_start.x, self.s_start.y)
 
-            self.s_goal.set_parent_and_cost(parent = self.s_start, cost_trav = self.cost_travel(node_start=self.s_start, node_end=self.s_goal))
-            self.path, self.path_vertex = self.extract_path()
+            self.search_goal_parent()
             self.current_iter = 1
-            self.is_goal_reached = True
             return
 
 
@@ -153,6 +164,7 @@ class GlobalRRTStar(BasePlanner):
                     neighbors_indexes = self.find_near_neighbors(node_new) # modify this for rewiring
 
                     self.vertex.append(node_new)
+                    node_new.set_index(len(self.vertex) - 1)
 
                     if neighbors_indexes:
 
@@ -165,12 +177,13 @@ class GlobalRRTStar(BasePlanner):
 
                 # Check if Converged
                 # print("extract path")
-                index = self.search_goal_parent() #returns False if not reached yet
-                if index:
-                    self.path, self.path_vertex = self.extract_path()
-                    self.is_goal_reached = True
+                if self.current_iter == self.iter_max - 1:
+                    self.is_goal_reached = self.search_goal_parent(print_costs = True)
+                else:
+                    self.is_goal_reached = self.search_goal_parent() #returns False if not reached yet
+                if self.is_goal_reached:
 
-                    new_cost_to_goal = self.cost(self.path_vertex[-2]) # since the last node is the goal and it doesnt have its parent
+                    new_cost_to_goal = self.cost(self.path_vertex[-1]) #TODO: why not -1?
 
                     # print("new cost to goal is: ", new_cost_to_goal)
                     if new_cost_to_goal == 0:
@@ -202,23 +215,6 @@ class GlobalRRTStar(BasePlanner):
         
 
 
-
-        # self.path_vertex.pop(-1)
-
-        # for node in self.path_vertex:
-            
-        #     self.choose_parent(node, self.find_near_neighbors(node))
-        #     self.rewire(node, self.find_near_neighbors(node))
-        
-        # index = self.search_goal_parent()
-        # self.path, self.path_vertex = self.extract_path(self.vertex[index])
-                    
-
-        # #Check to if any nodes in optimal path can be rewired together
-        # if len(self.path_vertex) > 3:
-        #     # for i in np.flip(np.arange(0, len(self.path_vertex) - 1)):
-        #     self.rewire_path(s_start_index=0)
-            
 
 
 ############### RRT* Basic Functions ############################
@@ -383,6 +379,8 @@ class GlobalRRTStar(BasePlanner):
         """
         cost to travel from node_start to node_end
         """
+
+        cost_travel = 0
         dist = math.hypot(node_start.x - node_end.x, node_start.y - node_end.y)
         # dist = math.sqrt((node_start.x - node_end.x)**2 + (node_start.y - node_end.y)**2)
         # cost_travel = dist/0.5
@@ -449,46 +447,72 @@ class GlobalRRTStar(BasePlanner):
 
 
     def search_goal_parent(self):
-        dist_list = [math.hypot(n.x - self.s_goal.x, n.y - self.s_goal.y) for n in self.vertex]
-        node_index = [i for i in range(len(dist_list)) if dist_list[i] <= self.goal_radius]
-        
-        if len(node_index) > 0:
-            cost_list = [self.cost(self.vertex[i]) for i in node_index
-                            if not self.utils.is_collision(self.vertex[i], self.s_goal)]
-            if len(cost_list) > 0:
-                mincost_node = self.vertex[ node_index[int(np.argmin(cost_list))] ]
-                self.s_goal.set_parent_and_cost(parent = mincost_node, cost_trav = self.cost_travel(node_start=mincost_node, node_end=self.s_goal))
-                return node_index[int(np.argmin(cost_list))]
-        else:
-            return False
+        """
+        Search the goal parent node based on path cost.
+        Extract the path.
+        Return True if the goal is reached, False otherwise.
 
+        if self.obstacles_list is not None:
+            Calculate the object cost of the path passing through the obstacles.
+            Find the best path based on it.
+        """
 
-    def extract_path(self):
-        path = []
-        path_vertex = []
-        
-        node = self.s_goal
-
-        while node.get_parent() is not None:
-            path.append([node.x, node.y])
-            path_vertex.append(node)
-            
-            node = node.get_parent()
-            
-        path.append([node.x, node.y])
-        path_vertex.append(node)
-        
-
-        return list(reversed(path)), list(reversed(path_vertex))
-
-
-    def is_goal_reachable(self):
-        
-        if len(self.path) == 0:
-            print("There is currently no generated path to evaluate.")
-            return False
-        else:
+        # Trivial case: the goal is already reached.
+        if math.hypot(self.s_start.x - self.s_goal.x, self.s_start.y - self.s_goal.y) < self.goal_radius:
+            # The goal is already reached.
+            self.s_goal.set_parent_and_cost(parent = self.s_start, cost_trav = self.cost_travel(node_start=self.s_start, node_end=self.s_goal))
+            self.path.append([self.s_goal.x, self.s_goal.y])
+            self.path_vertex.append(self.s_goal)
+            self.path.append([self.s_start.x, self.s_start.y])
+            self.path_vertex.append(self.s_start)
             return True
+
+
+
+
+        dist_list = [math.hypot(n.x - self.s_goal.x, n.y - self.s_goal.y) for n in self.vertex]
+        neargoal_node_indexes = [i for i in range(len(dist_list)) if dist_list[i] <= self.goal_radius]
+        
+        if len(neargoal_node_indexes) > 0:
+            cost_list = [self.cost(self.vertex[i]) for i in neargoal_node_indexes
+                            if not self.utils.is_collision(self.vertex[i], self.s_goal)]
+
+
+
+
+            # Extract the best path
+            if len(cost_list) > 0:
+                MinCostNode_IdxTotal = neargoal_node_indexes[int(np.argmin(cost_list))]
+                MinCostNode = self.vertex[ MinCostNode_IdxTotal ]
+                self.s_goal.set_parent_and_cost(parent = MinCostNode, cost_trav = self.cost_travel(node_start=MinCostNode, node_end=self.s_goal))
+
+                self.path = []
+                self.path_vertex = []
+                node = self.s_goal
+                while node.get_parent() is not None:
+
+                    # path extraction
+                    self.path.append([node.x, node.y])
+                    self.path_vertex.append(node)
+                    node = node.get_parent()
+
+                self.path.append([node.x, node.y])
+                self.path_vertex.append(node)
+
+                self.path.reverse()
+                self.path_vertex.reverse()
+                
+
+                
+                return True
+
+                
+        else:
+            return False
+
+
+    
+
         
 
     def reset_tree(self, start:tuple=None, goal:tuple=None, heading_start:float=None):
@@ -504,6 +528,7 @@ class GlobalRRTStar(BasePlanner):
         
         self.path = []
         self.vertex = [self.s_start]
+        self.s_start.set_index(0)
         self.path_vertex = []
         self.plotting.xI = (self.s_start.x, self.s_start.y)
         self.plotting.xG = (self.s_goal.x, self.s_goal.y)
@@ -520,8 +545,8 @@ class GlobalRRTStar(BasePlanner):
             print(" Previous global start was: ", np.round(self.s_start.x,3), np.round(self.s_start.y,3))
             print(" Current Robot Position: ", np.round(self.global_map.robot_x,3), np.round(self.global_map.robot_y,3), np.round(np.rad2deg(self.global_map.robot_heading)))
             
-            [cmd_v, cmd_w] = self.global_map.get_cmd_limits()
-            waypoint = self.get_waypoint(self.global_map.robot_x, self.global_map.robot_y, self.global_map.robot_heading, step_T, RRT_getwaypoint_steps, cmd_v, cmd_w)
+            [cmd_v_limit, cmd_w_limit] = self.global_map.get_cmd_limits()
+            waypoint = self.global_map.get_waypoint(self.global_map.robot_x, self.global_map.robot_y, self.global_map.robot_heading, step_T, RRT_getwaypoint_steps, cmd_v_limit, cmd_w_limit, self.path)
             print(" Next Waypoint: ", waypoint)
 
             if (waypoint is not False)\
@@ -561,168 +586,13 @@ class GlobalRRTStar(BasePlanner):
 
 
 
-#################### Communcation with Local Planner ############################
-
-    def get_waypoint(self, robot_x, robot_y, robot_heading, Step_T, MPC_horizon, cmd_v, cmd_w):
-
-        """
-        This function takes in the current position of the robot and returns the next waypoint (in the global coordinate system)
-        that the robot should move to. The waypoint is selected from the global path such that the robot is expected to reach
-        the waypoint within the total time given by the product of Step_T and MPC_horizon.
-
-        The function first finds the node in the global path that is nearest to the robot. It then iterates through the path
-        from this node and finds the node that the robot is expected to reach within the given total time. The function then
-        returns the coordinates of this node as the next waypoint.
-
-        If the robot is close to the end of the path, the function will return the last node in the path as the next waypoint.
-        If the robot is close to a node in the path, the function will return the next node in the path as the next waypoint.
-
-        The function also takes into account the elevation map and the current orientation of the robot. The function will
-        return a waypoint that is reachable by the robot given the elevation map and the current orientation of the robot.
-
-        Parameters
-        ----------
-        robot_x : float
-            The current x-coordinate of the robot in the global coordinate system.
-        robot_y : float
-            The current y-coordinate of the robot in the global coordinate system.
-        Step_T : float, optional
-            The time step of the MPC controller. Defaults to 0.4.
-        MPC_horizon : int, optional
-            The horizon of the MPC controller. Defaults to 10.
-
-        Returns
-        -------
-        global_waypoint : array_like
-            The coordinates of the next waypoint in the global coordinate system.
-        """
-        path = np.array(self.path)
-        global_waypoint = False
-        total_time = Step_T * MPC_horizon
-        
-
-
-
-        if path.shape[0] == 0:
-            print(' Getting Waypoint: No path received')
-            return False
-
-
-        # find a node that the agent can reach within the total time
-        node_index_nearest_from_robot = int(np.argmin([math.hypot(path[nd,0] - robot_x, path[nd,1] - robot_y)
-                                        for nd in range(path.shape[0])]))
-        c = np.arctan2( (path[node_index_nearest_from_robot,1]-robot_y), (path[node_index_nearest_from_robot,0]-robot_x)  )
-
-
-        if np.abs( wrap_to_pi(c-robot_heading) ) < np.pi/2:
-            waypoint_node_index = node_index_nearest_from_robot # if the nearest node is in front of the robot, use it
-        else:
-            waypoint_node_index = node_index_nearest_from_robot + 1 # if the nearest node is behind the robot, skip it and use the next one
-
-
-        # print('Total Path: \n', path.transpose())
-
-        if waypoint_node_index >= path.shape[0] - 1:
-            return path[-1,:]
-
-        if self.global_map.is_TraversabilityMap_built:
-            Estimated_travel_time_cumulative = 0
-            while True:
-
-
-
-                if Estimated_travel_time_cumulative == 0:
-                    x0 = robot_x
-                    y0 = robot_y
-                    c0 = robot_heading
-                    c0 = wrap_to_pi(c0)
-
-                else:
-                    x0 = path[waypoint_node_index-1,0]
-                    y0= path[waypoint_node_index-1,1]
-                    if waypoint_node_index == 0:
-                        c0 = np.arctan2( (path[waypoint_node_index,1]-robot_y), (path[waypoint_node_index,0]-robot_x)  )
-                    else:
-                        c0 = np.arctan2( (path[waypoint_node_index,1]-path[waypoint_node_index-1,1]), (path[waypoint_node_index,0]-path[waypoint_node_index-1,0])  )
-
-
-                row = int( (self.global_map.TraversabilityMap_xmax - x0)/self.global_map.map_resolution )
-                col = int( (self.global_map.TraversabilityMap_ymax - y0)/self.global_map.map_resolution )
-                if row < 0 or row >= self.global_map.TraversabilityMap_size_rows or col < 0 or col >= self.global_map.TraversabilityMap_size_cols:
-                    raise ValueError("row or col is out of range")
-                    continue
-                # TODO: check if this is correct
-                theta_layer = int(np.round((c0-self.global_map.TraversabilityMap_theta_min)/self.global_map.TraversabilityMap_theta_resolution))
-                if theta_layer == self.global_map.TraversabilityMap_size_layers:
-                    theta_layer = 0 # pi = -pi
-
-                cmd_v0 = self.global_map.TraversabilityMap[row, col, theta_layer, 0]
-                cmd_w0 = self.global_map.TraversabilityMap[row, col, theta_layer, 1]
-
-
-
-                x1 = path[waypoint_node_index,0]
-                y1 = path[waypoint_node_index,1]
-                if Estimated_travel_time_cumulative == 0:
-                    c1 = np.arctan2( (path[waypoint_node_index,1]-robot_y), (path[waypoint_node_index,0]-robot_x)  )
-                else:
-                    c1 = np.arctan2( (path[waypoint_node_index,1]-path[waypoint_node_index-1,1]), (path[waypoint_node_index,0]-path[waypoint_node_index-1,0])  )
-
-                row = int( (self.global_map.TraversabilityMap_xmax - x1)/self.global_map.map_resolution )
-                col = int( (self.global_map.TraversabilityMap_ymax - y1)/self.global_map.map_resolution )
-                if row < 0 or row >= self.global_map.TraversabilityMap_size_rows or col < 0 or col >= self.global_map.TraversabilityMap_size_cols:
-                    continue
-                theta_layer = int(np.round((c1-self.global_map.TraversabilityMap_theta_min)/self.global_map.TraversabilityMap_theta_resolution))
-                if theta_layer == self.global_map.TraversabilityMap_size_layers:
-                    theta_layer = 0 # pi = -pi
-
-                cmd_v1 = self.global_map.TraversabilityMap[row, col, theta_layer, 0]
-                cmd_w1 = self.global_map.TraversabilityMap[row, col, theta_layer, 1]
-
-
-
-
-
-                vertex_length = math.hypot(x1-x0, y1-y0)
-                vertex_anglechange = np.abs(wrap_to_pi(c1 - c0))
-
-                estimated_time_at_this_vertex = vertex_length/(0.5*(cmd_v0 + cmd_v1)) + vertex_anglechange/(0.5*(cmd_w0 + cmd_w1)/0.4)
-                # estimated_time_at_this_vertex = vertex_length/(cmd_v) + vertex_anglechange/(cmd_w/0.4)
-
-
-                if total_time < Estimated_travel_time_cumulative + estimated_time_at_this_vertex:
-                    if waypoint_node_index == 0: 
-                        global_waypoint = np.array([robot_x, robot_y]) + (path[waypoint_node_index,:] - np.array([robot_x, robot_y])) * (total_time - Estimated_travel_time_cumulative)/estimated_time_at_this_vertex
-                    else:
-                        global_waypoint = path[waypoint_node_index-1,:] + (path[waypoint_node_index,:] - path[waypoint_node_index-1,:]) * (total_time - Estimated_travel_time_cumulative)/estimated_time_at_this_vertex
-                    break
-                else:
-                    Estimated_travel_time_cumulative += estimated_time_at_this_vertex
-                    waypoint_node_index += 1
-
-
-                if waypoint_node_index >= path.shape[0] - 1:
-                    global_waypoint = path[-1,:]
-                    break
-
-        
-
-
-        return global_waypoint
-
-
-
-
-
-
-
             
         
 
 
 #################### RRT* additional functions ############################
     
-    def update_obstacles(self, obs_cir=[], obs_bound=[], obs_rec=[], obstacles=[]):
+    def update_static_obstacles(self, obs_cir=[], obs_bound=[], obs_rec=[], obstacles=[]):
         """
         Update obstacle representation by determining minimal rectangles to cover circular obstacles.
         Parameters:

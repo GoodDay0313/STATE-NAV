@@ -1,34 +1,20 @@
 __version__ = "0.0.1"
 
+# Import subpackages
 from . import planners
 from . import mapping
+from . import utility
 
-from .mapping import (
-    BaseMap,
-    CMDbasedMap,
-    ScoreBasedMap,
-    LearnedInSMap,
-    IHMCMap,
-    QuadrupedMap,
-    ElevationOnlyNetworkMLL,
-)
+# Import all classes from subpackages (respects their __all__ definitions)
+from .mapping import *
+from .planners import *
+from .utility import *
 
-# Import planner classes for easy access
-from .planners import (
-    BasePlanner,
-    GlobalRRTStar,
-)
-
+# Automatically combine __all__ from subpackages
+# This way, changes in subpackages automatically propagate here
 __all__ = [
+    # Subpackages
     "planners",
     "mapping",
-    "BaseMap",
-    "CMDbasedMap",
-    "ScoreBasedMap",
-    "LearnedInSMap",
-    "IHMCMap",
-    "QuadrupedMap",
-    "ElevationOnlyNetworkMLL",
-    "BasePlanner",
-    "GlobalRRTStar",
-]
+    "utility",
+] + mapping.__all__ + planners.__all__ + utility.__all__

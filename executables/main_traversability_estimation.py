@@ -18,6 +18,7 @@ from nav_msgs.msg import Path
 from std_msgs.msg import Float32MultiArray, MultiArrayLayout, MultiArrayDimension
 from grid_map_msgs.msg import GridMap
 
+from statenav_global.utility import Utils
 
 
 import warnings
@@ -27,21 +28,6 @@ warnings.simplefilter(action='ignore', category=RuntimeWarning)
 
 from pathlib import Path as PathLib
 cfg = OmegaConf.load(PathLib(__file__).parents[0] / "configs/planning_config.yaml")
-
-
-def set_random_seed(seed):
-    rng = np.random.RandomState(seed)
-    torch.manual_seed(seed)
-    print(f"Set random seed to {seed} in numpy and torch.")
-    return rng
-
-def wrap_to_pi(angle):
-    """Wraps an angle to the range [-π, π] using atan2."""
-    return np.arctan2(np.sin(angle), np.cos(angle))
-
-
-
-
 
 
 
@@ -61,11 +47,11 @@ def publish_costmap_float32multiarray(global_map, frame_id, global_costmap_pub, 
     global_costmap_topic = Float32MultiArray()
 
     if pub_locally:
-        [cmd_v, cmd_w] = global_map.get_cmd_limits()
-        waypoint = global_planner.get_waypoint(global_map.robot_x, global_map.robot_y, 
+        [cmd_v_limit, cmd_w_limit] = global_map.get_cmd_limits()
+        waypoint = global_map.get_waypoint(global_map.robot_x, global_map.robot_y, 
                                                 global_map.robot_heading, step_T, 
                                                 localmap_getwaypoint_horizonmultiplier*MPC_horizon, 
-                                                cmd_v, cmd_w)
+                                                cmd_v_limit, cmd_w_limit, global_planner.path)
         xmin = np.min([global_map.robot_x, waypoint[0]])
         xmax = np.max([global_map.robot_x, waypoint[0]])
         ymin = np.min([global_map.robot_y, waypoint[1]])
@@ -135,11 +121,11 @@ def publish_costmap_gridmap(global_map, frame_id, global_costmap_pub, pub_locall
     """
     # Calculate region bounds (same logic as Float32MultiArray)
     if pub_locally:
-        [cmd_v, cmd_w] = global_map.get_cmd_limits()
-        waypoint = global_planner.get_waypoint(global_map.robot_x, global_map.robot_y,
+        [cmd_v_limit, cmd_w_limit] = global_map.get_cmd_limits()
+        waypoint = global_map.get_waypoint(global_map.robot_x, global_map.robot_y,
                                                 global_map.robot_heading, step_T,
                                                 localmap_getwaypoint_horizonmultiplier*MPC_horizon,
-                                                cmd_v, cmd_w)
+                                                cmd_v_limit, cmd_w_limit, global_planner.path)
         xmin = np.min([global_map.robot_x, waypoint[0]])
         xmax = np.max([global_map.robot_x, waypoint[0]])
         ymin = np.min([global_map.robot_y, waypoint[1]])
@@ -312,7 +298,7 @@ def main():
     
 
     home_path = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__name__)) , os.pardir))
-    rng = set_random_seed(cfg.seed)
+    rng = Utils.set_random_seed(cfg.seed)
 
     #Environment Properties
     print(OmegaConf.to_yaml(cfg))
@@ -334,7 +320,8 @@ def main():
         global_map = CMDbasedMap(env_xmin=cfg.env_extent[0], env_xmax=cfg.env_extent[1], env_ymin=cfg.env_extent[2], env_ymax=cfg.env_extent[3],
                             goal_x=global_goal[0], goal_y=global_goal[1],
                             which_layer = cfg.which_layer,
-                            preest_update_resolution=cfg.trav_estimation_resoultion, instab_limit = cfg.instability_limit) # 0.37
+                            preest_update_resolution=cfg.trav_estimation_resoultion, instab_limit = cfg.instability_limit,\
+                            load_Travformer = True, load_MapReconstructor = False) # 0.37
     elif cfg.trav_option == "Proposed" and cfg.planner_option == "score":
         global_map = LearnedInSMap(env_xmin=cfg.env_extent[0], env_xmax=cfg.env_extent[1], env_ymin=cfg.env_extent[2], env_ymax=cfg.env_extent[3],
                             goal_x=global_goal[0], goal_y=global_goal[1],
@@ -457,11 +444,6 @@ def main():
                                                     step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon)
 
 
-                obstacle_list_topic = Float32MultiArray()
-                for obs in global_map.obs_list:
-                    obstacle_list_topic.data.append(obs[0])
-                    obstacle_list_topic.data.append(obs[1])
-                obstacle_list_pub.publish(obstacle_list_topic)
 
 
                 if do_RRT_globalplanning and not asynchronous_globalplanning:

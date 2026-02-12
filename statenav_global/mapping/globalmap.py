@@ -1,6 +1,5 @@
 from time import time
 import numpy as np
-import torch
 import os
 import datetime
 import math
@@ -8,12 +7,17 @@ import random
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from enum import IntEnum
-
-
-from statenav_global.mapping.uncertainty_models import *
-
 import hydra
 from omegaconf import DictConfig, OmegaConf
+
+
+import torch
+
+
+from statenav_global.utility import Utils
+
+
+
 
 
 import rospy
@@ -22,7 +26,6 @@ from grid_map_msgs.msg import GridMap
 from geometry_msgs.msg import PoseStamped
 
 
-import tf.transformations as tf_trans
 import transforms3d as tf3
 import warnings
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
@@ -31,7 +34,8 @@ warnings.simplefilter(action='ignore', category=RuntimeWarning)
 
 
 from pathlib import Path
-cfg = OmegaConf.load(Path(__file__).parents[2] / "executables/configs/planning_config.yaml")
+from statenav_global.utility.utils import get_project_root
+cfg = OmegaConf.load(get_project_root() / "executables/configs/planning_config.yaml")
 
 do_RRT_globalplanning = cfg.do_RRT_globalplanning
 
@@ -49,17 +53,6 @@ lookahead_angle = cfg.lookahead_angle
 
 instability_std_multiplier = cfg.instability_std_multiplier
 RRT_getwaypoint_steps = cfg.RRT_getwaypoint_steps
-
-
-def set_random_seed(seed):
-    rng = np.random.RandomState(seed)
-    torch.manual_seed(seed)
-    print(f"Set random seed to {seed} in numpy and torch.")
-    return rng
-
-def wrap_to_pi(angle):
-    """Wraps an angle to the range [-π, π] using atan2."""
-    return np.arctan2(np.sin(angle), np.cos(angle))
 
 
 
@@ -88,6 +81,12 @@ RC_PARAMS: dict = {
 savefigureonce_elevmap = cfg.savemap
 savefigureonce_travmap = cfg.savemap
 
+
+
+
+
+# batch putting of local elev map to global elev map
+# 
 
 
 
@@ -126,7 +125,7 @@ class TravmapInfo_IntEnum(IntEnum):
 
 
 class BaseMap:
-    def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_NN = True):
+    def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_Travformer = True, load_MapReconstructor = False):
 
 
         self.goal_x = goal_x
@@ -255,7 +254,6 @@ class BaseMap:
 
 
 
-
         # Visualization
         self.viz_channel = 0  # default channel
         self.viz_vmin = 0.0
@@ -264,36 +262,54 @@ class BaseMap:
         self.viz_cbar_label = "Traversability Score"
 
 
+        # ML related
+        self.device = 'cuda'
+        root_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 
-        # NN related
+        if load_MapReconstructor:
+
+
+            from statenav_global.mapping.lama_infer import load_lama_generator
+
+            self.lama_generator, missing, unexpected = load_lama_generator(
+                cfg_path=os.path.join(root_dir + "/lama/big-lama/config.yaml"),
+                ckpt_path=os.path.join(root_dir + "/lama/big-lama/models/best.ckpt"),
+                device="cuda"
+            )
+            print("LaMa loaded. missing:", len(missing), "unexpected:", len(unexpected)) if len(missing) > 0 or len(unexpected) > 0 else None
+            self.debug_recon_vis = False
+
+
+
+
+
+
+        # Travformer related
         self.local_patch_size = cfg.local_patch_size  # in meters
         self.elevonly_vw2instab_model = None
-        self.model_type = 'MLL'
-        self.device = 'cuda'
 
-                # Conditionally load model only if needed
-        if load_NN:
+        def _load_model(checkpoint_path, model_type='Travformer', device='cpu'):
+
+            from statenav_global.mapping.uncertainty_models import ElevationOnlyNetworkMLL
+            if model_type == 'Travformer':
+                model = ElevationOnlyNetworkMLL()
+
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            model.to(device)
+            model.eval()
+            return model
+
+
+        if load_Travformer:
             root_dir = os.path.dirname(os.path.abspath(__file__))
             elevonly_vw2instab_model_checkpoint = os.path.join(root_dir + "/checkpoints/elevonly_vw2instab.pth")
-            
-            def _load_model(checkpoint_path, model_type='MLL', device='cpu'):
-                model = ElevationOnlyNetworkMLL()
-                checkpoint = torch.load(checkpoint_path, map_location=device)
-                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-                model.to(device)
-                model.eval()
-                return model
-
-            self.elevonly_vw2instab_model = _load_model(elevonly_vw2instab_model_checkpoint, model_type=self.model_type, device=self.device)
-            print("Neural network model loaded.")
-
+            self.elevonly_vw2instab_model = _load_model(elevonly_vw2instab_model_checkpoint, model_type='Travformer', device=self.device)
+            print("Travformer model loaded.")
         else:
-            print("Skipping neural network model loading (read-only mode).")
-
-
-
+            print("Skipping Travformer model loading (read-only mode).")
 
 
 
@@ -302,7 +318,7 @@ class BaseMap:
 
 
     @torch.no_grad()
-    def _nn_inference(self, target_instability, elevation_map_numpy, commands_numpy, model, model_type='MLL', device='cpu'):
+    def TravFormer_Inference(self, target_instability, elevation_map_numpy, commands_numpy, model, device='cpu'):
 
         cmdvorcmdw = 0 if commands_numpy[0,0] != 0 else 1
 
@@ -333,6 +349,122 @@ class BaseMap:
             pred_logstd = pred_logstd.cpu().detach().numpy()
 
         return pred, pred_logstd
+
+
+
+
+    def ReconstructMap_NN_Inference(self, elevation_map_numpy, device='cpu'):
+        x = torch.as_tensor(elevation_map_numpy.copy(), dtype=torch.float32, device=device)  # (B,H,W)
+        m_known = ~torch.isnan(x)                      # True where known
+        x_filled = x.clone()
+        x_filled[~m_known] = 0.0
+
+        B, H, W = x.shape
+        mean_z = torch.zeros((B, 1, 1), device=device)
+        std_z  = torch.ones((B, 1, 1), device=device)
+
+        for b in range(B):
+            if m_known[b].any():
+                vals = x_filled[b][m_known[b]]
+                mean_z[b, 0, 0] = vals.mean()
+                std_z[b, 0, 0] = vals.std().clamp(min=1e-6)
+
+        xn = (x_filled - mean_z) / std_z
+
+        # map to [0,1] to look like an "image"
+        clip = 3.0
+        x01 = (torch.clamp(xn, -clip, clip) + clip) / (2 * clip)
+
+        img = x01.unsqueeze(1).repeat(1, 3, 1, 1)          # (B,3,H,W)
+        mask_hole = (~m_known).unsqueeze(1).float()        # (B,1,H,W), 1=hole
+
+        # LaMa typically wants masked input (some wrappers do this internally, some don’t).
+        # Safe universal pattern:
+        img_masked = img * (1.0 - mask_hole)
+
+        inp = torch.cat([img_masked, mask_hole], dim=1)   # (B,4,H,W)
+
+        # Forward
+        out = self.lama_generator(inp)   # could be tensor or dict depending on fork # (B,3,H,W)
+        if isinstance(out, dict):
+            out_img = out.get("inpainted", out.get("out", None))
+            if out_img is None:
+                raise RuntimeError(f"Unexpected LaMa output keys: {list(out.keys())}")
+        else:
+            out_img = out
+
+        # out01 = out_img[:, 0]                              # (B,H,W)
+        out01 = out_img.mean(dim=1)                        # (B,H,W)
+        yn = out01 * (2 * clip) - clip
+        y = yn * std_z.squeeze(1) + mean_z.squeeze(1)
+
+        # Planner safe: preserve known pixels exactly
+        y = torch.where(m_known, x, y)
+        y_np = y.detach().cpu().numpy()
+
+
+        if getattr(self, "debug_recon_vis", False):
+            self._visualize_reconstruction(
+                elevation_map_numpy,
+                y_np,
+                m_known.detach().cpu().numpy(),
+                idx=0,                     # visualize batch element 0
+                title_prefix="LaMa"
+            )
+
+        return y_np
+
+ 
+# pip install pytorch-lightning==1.2.9 albumentations==0.5.2
+# apt install curl
+# curl -LJO https://huggingface.co/smartywu/big-lama/resolve/main/big-lama.zip
+# unzip big-lama.zip
+
+    def _visualize_reconstruction(self, x_np, y_np, m_known, idx=0, title_prefix="LaMa"):
+        """
+        x_np: (B,H,W) original elevation with NaNs
+        y_np: (B,H,W) reconstructed elevation
+        m_known: (B,H,W) boolean mask (True = known)
+        """
+
+        x0 = x_np[idx]
+        y0 = y_np[idx]
+        m0 = m_known[idx]
+
+        # consistent color scale (ignore NaNs)
+        vmin = np.nanpercentile(x0, 5)
+        vmax = np.nanpercentile(x0, 95)
+
+
+        plt.close(3)
+        plt.figure(3)
+        fig, axs = plt.subplots(num=3, nrows=1, ncols=3, figsize=(12, 4), constrained_layout=True)
+        manager = plt.get_current_fig_manager()
+        # manager.window.setGeometry(0, 660, 480, 420)   # Adjust the position and size as needed
+        manager.window.setGeometry(960, 0, 480, 210)
+        plt.rcParams.update(RC_PARAMS)
+
+
+        im0 = axs[0].imshow(x0, vmin=vmin, vmax=vmax, cmap="gray")
+        axs[0].set_title(f"{title_prefix}: Input (with NaNs)")
+        axs[0].axis("off")
+
+        axs[1].imshow(~m0, cmap="gray")
+        axs[1].set_title("Missing Mask")
+        axs[1].axis("off")
+
+        im2 = axs[2].imshow(y0, vmin=vmin, vmax=vmax, cmap="gray")
+        axs[2].set_title("Reconstructed")
+        axs[2].axis("off")
+
+        fig.colorbar(im2, ax=axs, shrink=0.75)
+        plt.show(block=False)
+        plt.pause(0.001)
+
+
+
+
+
 
 
 
@@ -431,7 +563,7 @@ class BaseMap:
 
                         
 
-
+                        ## Selectively update the Traversability Map based on the elevation map information
                         # if global map was previously nan
                         if self.ElevMap_MetaInfo[row_global, col_global] == self.ElevmapInfo_IntEnum.ELEV_NotInitialized.value:
                         # if np.isnan(self.ElevationMap[row_global, col_global]):
@@ -528,27 +660,31 @@ class BaseMap:
                                 if estimating_pt_global_row < 0 or estimating_pt_global_row >= self.ElevationMap_size_rows\
                                     or estimating_pt_global_col < 0 or estimating_pt_global_col >= self.ElevationMap_size_cols:
                                     # This pt is out of the global map. no need to preestimate
-                                    continue
+                                    pass
                                 elif abs(self.ElevationMap_xmax - preest_res_rounded_x) < 0.5*self.local_patch_size or abs(preest_res_rounded_x - self.TraversabilityMap_xmin) < 0.5*self.local_patch_size\
                                     or abs(self.ElevationMap_ymax - preest_res_rounded_y) < 0.5*self.local_patch_size or abs(preest_res_rounded_y - self.TraversabilityMap_ymin) < 0.5*self.local_patch_size:
                                     # This pt is near the edge of the global map. no need to preestimate
-                                    continue
+                                    pass
                                 elif np.any(np.all(self.TravUpdate_Pts == [preest_res_rounded_x, preest_res_rounded_y], axis=1)):
                                     # This pt is already in the list
-                                    continue
+                                    pass
                                 #elif np.all(self.TraversabilityMap[estimating_pt_global_row, estimating_pt_global_col, :, 0] != self.InitialGuess_cmd_v):
                                 elif np.all(self.TravMap_MetaInfo[estimating_pt_global_row, estimating_pt_global_col, :] != self.TravmapInfo_IntEnum.TRAV_NotInitialized.value):
                                     # This pt is already preestimated in EVERY DIRECTIOn. no need to preestimate
-                                    continue
+                                    pass
                                 else:
                                     self.TravUpdate_Pts = np.append(self.TravUpdate_Pts, np.array([[preest_res_rounded_x, preest_res_rounded_y]]), axis=0)
                         
                             
+                        # Update the elevation map
+                        if self.ElevMap_MetaInfo[row_global, col_global] >= ElevmapInfo_IntEnum.ELEV_NeedReconstruction.value:
+                            # This pt is under reconstruction or reconstruction is done. no need to update from perception.
+                            pass
+                        else:
+                            self.ElevationMap[row_global, col_global] = local_map[row, col]
 
-
-                        self.ElevationMap[row_global, col_global] = local_map[row, col]
-                        if self.ElevMap_MetaInfo[row_global, col_global] == ElevmapInfo_IntEnum.ELEV_NotInitialized.value:
-                            self.ElevMap_MetaInfo[row_global, col_global] = ElevmapInfo_IntEnum.ELEV_MEASURED.value
+                            if self.ElevMap_MetaInfo[row_global, col_global] == ElevmapInfo_IntEnum.ELEV_NotInitialized.value:
+                                self.ElevMap_MetaInfo[row_global, col_global] = ElevmapInfo_IntEnum.ELEV_MEASURED.value
 
 
 
@@ -581,20 +717,12 @@ class BaseMap:
 
 
 
-
+            # Update the traversability map
             print("\nUpdating traversability map......")
             start_time = time()
             print(" Current robot position: {:.1f}, {:.1f}, {:.0f}".format(self.robot_x, self.robot_y, np.rad2deg(self.robot_heading)))
             print(" Global map range:      x-axis: ", self.ElevationMap_xmin, self.ElevationMap_xmax, "y-axis: ", self.ElevationMap_ymin, self.ElevationMap_ymax)
             
-            
-            # for i in range(self.TravUpdate_Pts.shape[0]):
-            #     x = self.TravUpdate_Pts[i, 0]
-            #     y = self.TravUpdate_Pts[i, 1]
-            #     row = int((x - self.ElevationMap_xmin)/self.map_resolution)
-            #     col = int((y - self.ElevationMap_ymin)/self.map_resolution)
-            #     self.travmap_metainfo_grid[row, col] = self.MetaInfo_IntEnum.UPDATE_NEEDED.value
-
 
             self.get_travmap(self.TravUpdate_Pts, 0, 0, 0, 0)
 
@@ -603,13 +731,8 @@ class BaseMap:
             self.TravUpdate_Pts = np.empty((0, 2))
             print("Traversability map updated. Total time of estimation: ", time()-start_time, "\n")
 
-
-
-
-
-
             theta_to_goal = np.arctan2(self.goal_y - self.robot_y, self.goal_x - self.robot_x)
-            theta_robot = wrap_to_pi(self.robot_heading)
+            theta_robot = Utils.wrap_to_pi(self.robot_heading)
             if visualize_map:
                 self.visualize_maps(theta_robot, path_plan)
 
@@ -699,7 +822,7 @@ class BaseMap:
             # plt.figure(2)
         manager = plt.get_current_fig_manager()
         # manager.window.setGeometry(0, 660, 480, 420)   # Adjust the position and size as needed
-        manager.window.setGeometry(240, 0, 480, 420)
+        manager.window.setGeometry(480, 0, 480, 420)
         plt.rcParams.update(RC_PARAMS)
 
 
@@ -752,7 +875,7 @@ class BaseMap:
 
 
     
-    def get_patch_in_elevmap(self, x_center, y_center, yaw, size):
+    def get_patch_in_map(self, x_center, y_center, yaw, size, map):
 
 
         """
@@ -760,6 +883,7 @@ class BaseMap:
         x_center, y_center: in the world frame
         size: in meters. width (=height) of the local patch
         yaw: in radian
+        map: numpy 2d array
 
         Returns:
         local_patch: a 2D array of size x size, which is the local patch of the global elevation map
@@ -767,7 +891,7 @@ class BaseMap:
         """
         ismapnan = False
 
-        if self.ElevationMap is not None:
+        if map is not None:
             row_center = int( (self.ElevationMap_xmax - x_center)/self.map_resolution )
             col_center = int( (self.ElevationMap_ymax - y_center)/self.map_resolution )
             givenpoint_tf_grid = tf3.affines.compose(np.array([row_center, col_center, 0]), tf3.euler.euler2mat(0, 0, yaw, 'sxyz'), np.ones(3))
@@ -788,11 +912,11 @@ class BaseMap:
                     local_patch_flattened[i] = np.nan
                     ismapnan = True
 
-                elif np.isnan(self.ElevationMap[local_patch_index_transformed[i, 0], local_patch_index_transformed[i, 1]]):
+                elif np.isnan(map[local_patch_index_transformed[i, 0], local_patch_index_transformed[i, 1]]):
                     local_patch_flattened[i] = np.nan
                     ismapnan = True
                 else:
-                    local_patch_flattened[i] = self.ElevationMap[local_patch_index_transformed[i, 0], local_patch_index_transformed[i, 1]]
+                    local_patch_flattened[i] = map[local_patch_index_transformed[i, 0], local_patch_index_transformed[i, 1]]
 
 
             local_patch = local_patch_flattened.reshape((halfsize_grid*2, halfsize_grid*2))
@@ -800,6 +924,11 @@ class BaseMap:
             return local_patch, ismapnan
 
 
+    def get_theta_layer(self, theta):
+        theta_layer = int(np.round((theta-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution))
+        if theta_layer == self.TraversabilityMap_size_layers:
+            theta_layer = 0 # pi = -pi
+        return theta_layer
 
     def xy2grid(self, x, y):
         
@@ -834,6 +963,8 @@ class BaseMap:
 
     def get_cmd_limits(self):
 
+        # TODO: there could be latency issue for robot's position when called by MPC in the future.
+
 
         if self.map_resolution is None or self.ElevationMap is None or self.TraversabilityMap is None:
             return self.toorisky_v, self.toorisky_w
@@ -852,7 +983,7 @@ class BaseMap:
             
             for j in range(-1, 2):
                 theta = self.robot_heading + j * angle_tolerance
-                theta = wrap_to_pi(theta)
+                theta = Utils.wrap_to_pi(theta)
 
                 x = self.robot_x + delta_dist * np.cos(theta)
                 y = self.robot_y + delta_dist * np.sin(theta)
@@ -886,17 +1017,142 @@ class BaseMap:
         return cmd_v_limit, cmd_w_limit
 
 
+    def get_waypoint(self, robot_x, robot_y, robot_heading, Step_T, MPC_horizon, cmd_v_limit, cmd_w_limit, path):
+        """
+        This function takes in the current position of the robot and returns the next waypoint (in the global coordinate system)
+        that the robot should move to. The waypoint is selected from the global path such that the robot is expected to reach
+        the waypoint within the total time given by the product of Step_T and MPC_horizon.
+
+        The function first finds the node in the global path that is nearest to the robot. It then iterates through the path
+        from this node and finds the node that the robot is expected to reach within the given total time. The function then
+        returns the coordinates of this node as the next waypoint.
+
+        If the robot is close to the end of the path, the function will return the last node in the path as the next waypoint.
+        If the robot is close to a node in the path, the function will return the next node in the path as the next waypoint.
+
+        The function also takes into account the elevation map and the current orientation of the robot. The function will
+        return a waypoint that is reachable by the robot given the elevation map and the current orientation of the robot.
+
+        Parameters
+        ----------
+        robot_x : float
+            The current x-coordinate of the robot in the global coordinate system.
+        robot_y : float
+            The current y-coordinate of the robot in the global coordinate system.
+        robot_heading : float
+            The current heading of the robot in radians.
+        Step_T : float, optional
+            The time step of the MPC controller. Defaults to 0.4.
+        MPC_horizon : int, optional
+            The horizon of the MPC controller. Defaults to 10.
+        cmd_v_limit : float
+            Maximum linear velocity limit.
+        cmd_w_limit : float
+            Maximum angular velocity limit.
+        path : array_like
+            The global path as a numpy array of shape (N, 2) where each row is [x, y].
+
+        Returns
+        -------
+        global_waypoint : array_like or False
+            The coordinates of the next waypoint in the global coordinate system, or False if no path is available.
+        """
+        path = np.array(path)
+        global_waypoint = False
+        total_time = Step_T * MPC_horizon
+        if path.shape[0] == 0:
+            print(' Getting Waypoint: No path received')
+            return False
+        
+        cmd_v_limit = max(cmd_v_limit, 0.1)
+        cmd_w_limit = max(cmd_w_limit, 0.06)
+
+        # find a node that the agent can reach within the total time
+        node_index_nearest_from_robot = int(np.argmin([math.hypot(path[nd,0] - robot_x, path[nd,1] - robot_y)
+                                        for nd in range(path.shape[0])]))
+        waypoint_node_index = node_index_nearest_from_robot
+        robot_to_wp_angle = np.arctan2( (path[waypoint_node_index,1]-robot_y), (path[waypoint_node_index,0]-robot_x)  )
+        robot_to_goal_angle = np.arctan2( (path[-1,1]-robot_y), (path[-1,0]-robot_x)  )
+        robot_to_goal_distance = math.hypot(path[-1,0] - robot_x, path[-1,1] - robot_y)
+        reachable_radius = total_time * cmd_v_limit
+
+        if waypoint_node_index >= path.shape[0] - 1:
+            print(' Getting Waypoint: Getting the end of the path')
+            return path[-1,:]
+
+        # Find an intermediate goal that is distant by 2 * reachable_radius from the robot
+        min_cmd = max(cmd_v_limit, 0.25)
+        intermediate_goal_radius = 2 * total_time * min_cmd
+        intermediate_goal_node_index = waypoint_node_index
+        for node_idx in range(waypoint_node_index,path.shape[0]):
+            if math.hypot(path[node_idx,0] - robot_x, path[node_idx,1] - robot_y) >= intermediate_goal_radius:
+                intermediate_goal_node_index = node_idx
+                break
+        robot_to_intermediate_goal_distance = math.hypot(path[intermediate_goal_node_index,0] - robot_x, path[intermediate_goal_node_index,1] - robot_y)
+        
+        set_this_node_as_waypoint = False
+        while set_this_node_as_waypoint == False:
+
+            wp_to_intermediate_goal_distance = math.hypot(path[waypoint_node_index,0] - path[intermediate_goal_node_index,0], path[waypoint_node_index,1] - path[intermediate_goal_node_index,1])
+
+            if waypoint_node_index >= path.shape[0] - 1:
+                print(' Getting Waypoint: Getting the end of the path')
+                return path[-1,:]
+
+            if wp_to_intermediate_goal_distance > robot_to_intermediate_goal_distance:
+                # This waypoint is behind the robot. Proceed to the next node
+                waypoint_node_index = waypoint_node_index + 1
+                robot_to_wp_angle = np.arctan2( (path[waypoint_node_index,1]-robot_y), (path[waypoint_node_index,0]-robot_x)  )
+
+            else:
+                set_this_node_as_waypoint = True
+
+        if waypoint_node_index >= path.shape[0] - 1:
+            print(' Getting Waypoint: Getting the end of the path')
+            return path[-1,:]
+
+        if self.is_TraversabilityMap_built:
+            
+            # Starting from the initial waypoint, find a point that the robot can reach within the total time
+            for node in range(waypoint_node_index, path.shape[0]):
+
+                robot_to_this_node_distance = math.hypot(path[node,0] - robot_x, path[node,1] - robot_y)
+                if robot_to_this_node_distance > reachable_radius: # we got to a node that is further than the reachable radius
+
+                    if node == waypoint_node_index: # the nearest hopeful node is already further than the reachable radius
+                        global_waypoint = np.array([robot_x, robot_y]) + (path[node,:] - np.array([robot_x, robot_y])) * (reachable_radius)/robot_to_this_node_distance
+                        return global_waypoint
+
+                    if node == path.shape[0] - 1:
+                        global_waypoint = path[-1,:]
+                        return global_waypoint
+
+                    # This means that the found node is not the nearest hopeful node.
+                    # We need to get intermediate point between this found node and its previous node
+                    previous_node = node - 1
+                    robot_to_previous_node_distance = math.hypot(path[previous_node,0] - robot_x, path[previous_node,1] - robot_y)
+                    if robot_to_previous_node_distance > reachable_radius:
+                        print(f'[DEBUG INFO] The previous node: {path[previous_node,:]} with distance {robot_to_previous_node_distance} is further than the reachable radius: {reachable_radius}')
+                        print(f'[DEBUG INFO] The found node: {path[node,:]} with distance {robot_to_this_node_distance} is further than the reachable radius: {reachable_radius}')
+                        print('But it is not the nearest hopeful node')
+                        raise ValueError('This should not happen')
+                    else: # robot_to_previous_node_distance < reachable_radius
+                        global_waypoint = path[previous_node,:] + (path[node,:] - path[previous_node,:]) * (reachable_radius - robot_to_previous_node_distance)/(robot_to_this_node_distance - robot_to_previous_node_distance)
+                        # This is not exactly accurate equation but good approximation
+                        return global_waypoint
+
+        return global_waypoint
 
     
     def pose_callback(self, msg: PoseStamped):
         p = msg.pose.position
         q = msg.pose.orientation
-        quat = [q.x, q.y, q.z, q.w]
-        roll, pitch, yaw = tf_trans.euler_from_quaternion(quat)
+        quat = [q.w, q.x, q.y, q.z]
+        roll, pitch, yaw = tf3.euler.quat2euler(quat)
         msg_yaw = yaw
         self.robot_x = p.x
         self.robot_y = p.y
-        self.robot_heading = wrap_to_pi(yaw)
+        self.robot_heading = Utils.wrap_to_pi(yaw)
         # rospy.loginfo_throttle(1.0, "[pose_callback] x: %.2f, y: %.2f, yaw: %.2f rad", self.robot_x, self.robot_y, self.robot_heading)
 
 
@@ -977,8 +1233,8 @@ class BaseMap:
 
 
 class CMDbasedMap(BaseMap):
-    def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_NN = True):
-        super().__init__(env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_NN)
+    def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_Travformer = True, load_MapReconstructor = False):
+        super().__init__(env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_Travformer, load_MapReconstructor)
 
 
         self.InitialGuess_cmd_v = cfg.default_safe_cmd_v
@@ -995,8 +1251,8 @@ class CMDbasedMap(BaseMap):
         self.w_res = self.maximum_cmd_w / cfg.num_commands
 
         self.instability_limit = instab_limit # = \delta_limit
-        self.obstacle_cmd_v_threshold = cfg.obstacle_cmd_v_threshold
-        self.obs_list = []
+        self.StaticObs_cmd_v_threshold = cfg.obstacle_cmd_v_threshold
+        self.StaticObs_list = []
 
         # Visualization
         self.viz_channel = 0  # default channel
@@ -1051,7 +1307,7 @@ class CMDbasedMap(BaseMap):
                 y = xyc[1]
                 theta = xyc[2]
 
-                patch, ismapnan = self.get_patch_in_elevmap(x, y, theta, self.local_patch_size)
+                patch, ismapnan = self.get_patch_in_map(x, y, theta, self.local_patch_size, self.ElevationMap)
 
                 if ismapnan:
                     xyc_patchindex[patchindex_counter, 3] = -1 # -1 means NaN 
@@ -1072,7 +1328,7 @@ class CMDbasedMap(BaseMap):
             # patch_tensor_extended = np.concatenate((patch_tensor, np.zeros((64-patch_tensor.shape[0]%64, patch_tensor.shape[1], patch_tensor.shape[2]))), axis=0)
             # cmd_v_tensor = np.concatenate( (np.full((patch_tensor_extended.shape[0],1), 0.5), np.full((patch_tensor_extended.shape[0],1), 0)), axis=1)
 
-            # [instab, std_pred, target_v] = self._nn_inference(self.instability_limit, patch_tensor_extended, cmd_v_tensor, model=self.elevonly_v2instab_model, model_type=self.model_type, device=self.device)
+            # [instab, std_pred, target_v] = self.TravFormer_Inference(self.instability_limit, patch_tensor_extended, cmd_v_tensor, model=self.elevonly_v2instab_model, model_type=self.model_type, device=self.device)
              # max_iter = 2
             # iter = 0
             # while iter < max_iter:
@@ -1086,7 +1342,7 @@ class CMDbasedMap(BaseMap):
             #     if abs(instab[0][0] + 2*math.exp(std_pred[0][0]) - self.instability_limit) < 0.1:
             #         break
                 
-            #     [instab, std_pred, target_v] = self._nn_inference(self.instability_limit, patch, [target_v,0], model=self.elevonly_v2instab_model, model_type=self.model_type, device=self.device)
+            #     [instab, std_pred, target_v] = self.TravFormer_Inference(self.instability_limit, patch, [target_v,0], model=self.elevonly_v2instab_model, model_type=self.model_type, device=self.device)
 
             #     iter += 1
                     
@@ -1097,11 +1353,11 @@ class CMDbasedMap(BaseMap):
             # cmd_v = target_v
 
 
-            # [instab, std_pred, target_v] = self._nn_inference(self.instability_limit, patch, [0.5,0], model=self.elevonly_v2instab_model, model_type=self.model_type, device=self.device)
+            # [instab, std_pred, target_v] = self.TravFormer_Inference(self.instability_limit, patch, [0.5,0], model=self.elevonly_v2instab_model, model_type=self.model_type, device=self.device)
             # self.mean_time = (self.mean_time*self.inference_counter + (time() - start))/(self.inference_counter+1)
             # self.inference_counter += 1
             # using another model
-            # [instab, std_pred, target_v] = self._nn_inference(self.instability_limit, patch, [0.5,0], model=self.elevonly_lateraldrift_model, model_type=self.model_type, device=self.device)
+            # [instab, std_pred, target_v] = self.TravFormer_Inference(self.instability_limit, patch, [0.5,0], model=self.elevonly_lateraldrift_model, model_type=self.model_type, device=self.device)
             
             patch_tensor_extended = np.concatenate((patch_tensor, np.zeros((64-patch_tensor.shape[0]%64, patch_tensor.shape[1], patch_tensor.shape[2]))), axis=0) # to make the batch size 64 multiple
             patch_cat_tensor = np.concatenate((patch_tensor_extended, patch_tensor_extended), axis=0) # to get both for cmdv and cmdw
@@ -1129,7 +1385,7 @@ class CMDbasedMap(BaseMap):
                 cmd_cat_tensor[size:,1] = w
 
                 start = time()
-                [instab_mean_cat, instab_std_cat] = self._nn_inference(None, patch_cat_tensor, cmd_cat_tensor, model=self.elevonly_vw2instab_model, model_type=self.model_type, device=self.device)
+                [instab_mean_cat, instab_std_cat] = self.TravFormer_Inference(None, patch_cat_tensor, cmd_cat_tensor, model=self.elevonly_vw2instab_model, device=self.device)
                 mean_time = (mean_time*inference_counter + (time() - start))/(inference_counter+1)
                 inference_counter += 1
 
@@ -1168,17 +1424,17 @@ class CMDbasedMap(BaseMap):
                     
                     
                     isobsinthelist = False
-                    for obs in self.obs_list:
+                    for obs in self.StaticObs_list:
                         if x == obs[0] and y == obs[1]:
                             isobsinthelist = True
                             break
 
-                    if cmd_v < self.obstacle_cmd_v_threshold and not isobsinthelist: # if cmd_v is too low, consider it as an obstacle.
+                    if cmd_v < self.StaticObs_cmd_v_threshold and not isobsinthelist: # if cmd_v is too low, consider it as an obstacle.
                         row, col = self.xy2grid(x, y)
-                        if np.all(self.TraversabilityMap[row, col, :, 0] < self.obstacle_cmd_v_threshold):
-                            self.obs_list.append([x,y])
-                    elif cmd_v >= self.obstacle_cmd_v_threshold and isobsinthelist: # If it was obstacle but now okay with the updated perception, remove it from the list
-                        self.obs_list.remove([x,y])
+                        if np.all(self.TraversabilityMap[row, col, :, 0] < self.StaticObs_cmd_v_threshold):
+                            self.StaticObs_list.append([x,y])
+                    elif cmd_v >= self.StaticObs_cmd_v_threshold and isobsinthelist: # If it was obstacle but now okay with the updated perception, remove it from the list
+                        self.StaticObs_list.remove([x,y])
 
                     #
                     
@@ -1193,7 +1449,7 @@ class CMDbasedMap(BaseMap):
                 square_BL_entry = np.array([ round( (self.TraversabilityMap_xmax - square_BL_xyc[0])/self.map_resolution ), round( (self.TraversabilityMap_ymax - square_BL_xyc[1])/self.map_resolution ) ])
                 square_TR_entry = np.array([ round( (self.TraversabilityMap_xmax - square_TR_xyc[0])/self.map_resolution ), round( (self.TraversabilityMap_ymax - square_TR_xyc[1])/self.map_resolution ) ])
                 
-                theta = wrap_to_pi(theta)
+                theta = Utils.wrap_to_pi(theta)
                 theta_layer = int(np.round((theta-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution))
                 if theta_layer == self.TraversabilityMap_size_layers:
                     theta_layer = 0 # pi = -pi
@@ -1214,7 +1470,7 @@ class CMDbasedMap(BaseMap):
             for xyc in estimating_xycpts_set:
 
                 isobsinthelist = False
-                for obs in self.obs_list:
+                for obs in self.StaticObs_list:
                     if xyc[0] == obs[0] and xyc[1] == obs[1]:
                         isobsinthelist = True
                         break
@@ -1291,7 +1547,7 @@ class CMDbasedMap(BaseMap):
 
 
                     theta = xyc[2]
-                    theta = wrap_to_pi(theta)
+                    theta = Utils.wrap_to_pi(theta)
                     theta_layer = math.floor(np.round((theta-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution))
                     #Code not implemented which will be used for checking the duplicate quadrants
                     if theta_layer == self.TraversabilityMap_size_layers:
@@ -1363,14 +1619,14 @@ class CMDbasedMap(BaseMap):
             c2 = np.pi/2
         else:
             c2 = (y2-y1)/(x2-x1)
-        theta_1 = wrap_to_pi(c1)
+        theta_1 = Utils.wrap_to_pi(c1)
         theta_2 = np.arctan2(y2-y1, x2-x1)
 
         # Get the equation of line between (x1,y1,c1) and (x2,y2,c2) 
         my = c2
         ny = y1 - my*x1
 
-        mth = wrap_to_pi(theta_2 - theta_1) / (x2 - x1)
+        mth = Utils.wrap_to_pi(theta_2 - theta_1) / (x2 - x1)
         nth = theta_1 - mth*x1
 
         # convert the x1 and x2 to the row index in the global map preestimated
@@ -1393,7 +1649,7 @@ class CMDbasedMap(BaseMap):
 
         if row_xmin == row_xmax and col_ymin == col_ymax:
 
-            theta_1 = wrap_to_pi(theta_1)
+            theta_1 = Utils.wrap_to_pi(theta_1)
             theta_layer = int(np.round((theta_1-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution))
             if theta_layer == self.TraversabilityMap_size_layers:
                 theta_layer = 0 # pi = -pi
@@ -1401,7 +1657,7 @@ class CMDbasedMap(BaseMap):
             w = self.TraversabilityMap[row_xmin, col_ymin, theta_layer][1]
 
             segment_length = vertex_distance
-            segment_anglechange = np.abs( (segment_length/vertex_distance) * wrap_to_pi(theta_2 - theta_1))
+            segment_anglechange = np.abs( (segment_length/vertex_distance) * Utils.wrap_to_pi(theta_2 - theta_1))
 
 
             travel_time = segment_length/v + segment_anglechange/(w/step_T)
@@ -1453,7 +1709,7 @@ class CMDbasedMap(BaseMap):
 
                 [row, col] = self.xy2grid(x_i1, y_i1)
 
-                c_i1 = wrap_to_pi(c_i1)
+                c_i1 = Utils.wrap_to_pi(c_i1)
                 if np.isnan(c_i1) or np.isnan((c_i1-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution):
                     print("c_i1 is NaN")
                     print(x1, y1, x2, y2, c1, c2)
@@ -1467,7 +1723,7 @@ class CMDbasedMap(BaseMap):
                 # print(x_i1, y_i1, x_i2, y_i2, row, col, theta_layer)
                 # print(row, col, theta_layer)
                 segment_length = math.hypot(x_i2-x_i1, y_i2-y_i1)
-                segment_anglechange = np.abs( (segment_length/vertex_distance) * wrap_to_pi(c_i2 - c_i1) )
+                segment_anglechange = np.abs( (segment_length/vertex_distance) * Utils.wrap_to_pi(c_i2 - c_i1) )
                 v = self.TraversabilityMap[row, col, theta_layer, 0]
                 w = self.TraversabilityMap[row, col, theta_layer, 1]
 
@@ -1491,8 +1747,8 @@ class CMDbasedMap(BaseMap):
 
 class ScoreBasedMap(BaseMap):
     
-    def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_NN = True):
-        super().__init__(env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_NN)
+    def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_Travformer = True):
+        super().__init__(env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_Travformer)
 
 
         self.InitialGuess_cmd_v = cfg.scorebased_safe_cmd_v
@@ -1549,14 +1805,14 @@ class ScoreBasedMap(BaseMap):
             c2 = np.pi/2
         else:
             c2 = (y2-y1)/(x2-x1)
-        theta_1 = wrap_to_pi(c1)
+        theta_1 = Utils.wrap_to_pi(c1)
         theta_2 = np.arctan2(y2-y1, x2-x1)
 
         # Get the equation of line between (x1,y1,c1) and (x2,y2,c2) 
         my = c2
         ny = y1 - my*x1
 
-        mth = wrap_to_pi(theta_2 - theta_1) / (x2 - x1)
+        mth = Utils.wrap_to_pi(theta_2 - theta_1) / (x2 - x1)
         nth = theta_1 - mth*x1
 
         # convert the x1 and x2 to the row index in the global map preestimated
@@ -1579,7 +1835,7 @@ class ScoreBasedMap(BaseMap):
 
         if row_xmin == row_xmax and col_ymin == col_ymax:
 
-            theta_1 = wrap_to_pi(theta_1)
+            theta_1 = Utils.wrap_to_pi(theta_1)
             theta_layer = int(np.round((theta_1-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution))
             if theta_layer == self.TraversabilityMap_size_layers:
                 theta_layer = 0 # pi = -pi
@@ -1641,7 +1897,7 @@ class ScoreBasedMap(BaseMap):
 
                 row = int( (self.TraversabilityMap_xmax - x_i1)/self.map_resolution )
                 col = int( (self.TraversabilityMap_ymax - y_i1)/self.map_resolution )
-                c_i1 = wrap_to_pi(c_i1)
+                c_i1 = Utils.wrap_to_pi(c_i1)
                 theta_layer = int(np.round((c_i1-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution))
                 if theta_layer == self.TraversabilityMap_size_layers:
                     theta_layer = 0 # pi = -pi
@@ -1676,8 +1932,8 @@ class ScoreBasedMap(BaseMap):
 
 class LearnedInSMap(ScoreBasedMap):
 
-    def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_NN = True):
-        super().__init__(env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_NN)
+    def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_Travformer = True):
+        super().__init__(env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y, which_layer, preest_update_resolution, instab_limit, load_Travformer)
         
         self.cost_at_best = 2.14 # at v = 0.5 on flat terrain, the prediction was mean = 2, std = 0.07 -> VaR instab = 2.14
 
@@ -1758,7 +2014,7 @@ class LearnedInSMap(ScoreBasedMap):
                 y = xyc[1]
                 theta = xyc[2]
 
-                patch, ismapnan = self.get_patch_in_elevmap(x, y, theta, self.local_patch_size)
+                patch, ismapnan = self.get_patch_in_map(x, y, theta, self.local_patch_size, self.ElevationMap)
 
                 
                 
@@ -1789,7 +2045,7 @@ class LearnedInSMap(ScoreBasedMap):
 
             patch_tensor_extended = np.concatenate((patch_tensor, np.zeros((64-patch_tensor.shape[0]%64, patch_tensor.shape[1], patch_tensor.shape[2]))), axis=0)
             safe_cmdv_tensor_extended = np.concatenate((safe_cmdv_tensor, np.zeros((64-safe_cmdv_tensor.shape[0]%64, safe_cmdv_tensor.shape[1]))), axis=0)
-            [instability_mean_tensor, instability_std_tensor] = self._nn_inference(None, patch_tensor_extended, safe_cmdv_tensor_extended, model=self.elevonly_vw2instab_model, model_type=self.model_type, device=self.device)
+            [instability_mean_tensor, instability_std_tensor] = self.TravFormer_Inference(None, patch_tensor_extended, safe_cmdv_tensor_extended, model=self.elevonly_vw2instab_model, device=self.device)
             
             
 
@@ -1833,7 +2089,7 @@ class LearnedInSMap(ScoreBasedMap):
                 square_BL_entry = np.array([ round( (self.TraversabilityMap_xmax - square_BL_xyc[0])/self.map_resolution ), round( (self.TraversabilityMap_ymax - square_BL_xyc[1])/self.map_resolution ) ])
                 square_TR_entry = np.array([ round( (self.TraversabilityMap_xmax - square_TR_xyc[0])/self.map_resolution ), round( (self.TraversabilityMap_ymax - square_TR_xyc[1])/self.map_resolution ) ])
                 
-                theta = wrap_to_pi(theta)
+                theta = Utils.wrap_to_pi(theta)
                 theta_layer = int(np.round((theta-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution))
                 if theta_layer == self.TraversabilityMap_size_layers:
                     theta_layer = 0 # pi = -pi
@@ -1877,7 +2133,7 @@ class LearnedInSMap(ScoreBasedMap):
                             continue
                         else:
                             theta = xyc[2]
-                            theta = wrap_to_pi(theta)
+                            theta = Utils.wrap_to_pi(theta)
                             theta_layer = int(np.round((theta-self.TraversabilityMap_theta_min)/self.TraversabilityMap_theta_resolution))
                             #Code not implemented which will be used for checking the duplicate quadrants
                             if theta_layer == self.TraversabilityMap_size_layers:

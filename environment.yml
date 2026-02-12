@@ -1,0 +1,55 @@
+name: state_nav
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  # Core scientific computing
+  - numpy>=1.21
+  - scipy>=1.7
+  - pandas
+  # Image processing
+  - scikit-image>=0.19
+  - scikit-learn>=0.24.2
+  - pillow>=6.2.0
+  # Visualization
+  - matplotlib
+  # Graph/geometry
+  - networkx>=3.0
+  - shapely>=1.7.1
+  # Utilities
+  - tqdm
+  - pyyaml
+  - joblib
+  - six
+  - psutil
+  - pytest
+  - pip
+  - pip:
+    # OpenCV (pip version for broader compatibility)
+    - opencv-python
+    # Deep learning
+    - tensorflow
+    - pytorch-lightning>=1.6.0
+    - kornia>=0.6.0
+    # Configuration
+    - hydra-core>=1.1.0
+    - omegaconf
+    - easydict
+    - simple-parsing
+    - ruamel.yaml
+    # Augmentation
+    - albumentations>=1.0.0
+    - imgaug
+    # Geometry/transforms
+    - bezier
+    - transforms3d
+    # Data processing
+    - webdataset
+    - braceexpand
+    - imageio
+    # Utilities
+    - tabulate
+    - memory-profiler
+    - packaging

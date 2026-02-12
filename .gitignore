@@ -2,7 +2,11 @@ dist/
 
 *.egg-info
 *.pyc
+*.pth
 *.egg
 PKG-INFO
 *.pdf
-docker/.etc/
+ROS/
+docker/
+statenav_global/mapping/lama
+.vscode/*
