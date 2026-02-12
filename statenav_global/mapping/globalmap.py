@@ -20,7 +20,6 @@ from statenav_global.utility import Utils
 
 
 
-import rospy
 from std_msgs.msg import Float32MultiArray
 from grid_map_msgs.msg import GridMap
 from geometry_msgs.msg import PoseStamped

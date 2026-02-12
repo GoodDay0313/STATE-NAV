@@ -1,4 +1,4 @@
-from time import time
+from time import time, sleep
 import numpy as np
 import torch
 import os
@@ -12,7 +12,9 @@ from statenav_global.mapping import *
 import transforms3d as tf3
 
 
-import rospy
+import threading
+import rclpy
+from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from std_msgs.msg import Float32MultiArray, MultiArrayLayout, MultiArrayDimension
@@ -115,7 +117,7 @@ def publish_costmap_float32multiarray(global_map, frame_id, global_costmap_pub, 
 
 
 def publish_costmap_gridmap(global_map, frame_id, global_costmap_pub, pub_locally, global_planner,
-                            step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon):
+                            step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon, node=None):
     """
     Publish costmap using GridMap message type.
     """
@@ -171,7 +173,7 @@ def publish_costmap_gridmap(global_map, frame_id, global_costmap_pub, pub_locall
     # Initialize GridMap message
     grid_map_msg = GridMap()
     grid_map_msg.info.header.frame_id = frame_id
-    grid_map_msg.info.header.stamp = rospy.Time.now()
+    grid_map_msg.info.header.stamp = node.get_clock().now().to_msg()
 
     # Set GridMap metadata
     grid_map_msg.info.resolution = global_map.map_resolution
@@ -337,11 +339,11 @@ def main():
 
     ############################## ROS INITIALIZATION ########################################
     print("Initializing... ROS Node")
-    rospy.init_node('Global_Planner', anonymous=True)
-    rate = rospy.Rate(1) 
+    rclpy.init()
+    node = rclpy.create_node('global_planner')
 
-    robot_pose_listner = rospy.Subscriber("/robot/pose", PoseStamped, global_map.pose_callback, queue_size=1) # warning: timestamp is not correct
-    robocentric_map_listner = rospy.Subscriber("/elevation_mapping/elevation_map_filter", GridMap, global_map.robo_centric_map_callback,  queue_size=1)
+    robot_pose_listner = node.create_subscription(PoseStamped, "/robot/pose", global_map.pose_callback, 1) # warning: timestamp is not correct
+    robocentric_map_listner = node.create_subscription(GridMap, "/elevation_mapping/elevation_map_filter", global_map.robo_centric_map_callback, 1)
 
     use_gridmap_msg = cfg.get('use_gridmap_msg', False)  # Default to False for backward compatibility
     frame_id = cfg.frame_id
@@ -366,15 +368,19 @@ def main():
 
     ############################## ROS Publisher Setup ##############################
     if use_gridmap_msg:
-        global_costmap_pub = rospy.Publisher("/global_costmap", GridMap, queue_size=1)
+        global_costmap_pub = node.create_publisher(GridMap, "/global_costmap", 1)
         print("Using GridMap message type for costmap publishing")
     else:
-        global_costmap_pub = rospy.Publisher("/global_costmap", Float32MultiArray, queue_size=1)
+        global_costmap_pub = node.create_publisher(Float32MultiArray, "/global_costmap", 1)
         print("Using Float32MultiArray message type for costmap publishing")
 
-    global_path_pub = rospy.Publisher("/global_path", Path, queue_size=1)
-    obstacle_list_pub = rospy.Publisher("/obstacle_list", Float32MultiArray, queue_size=1)
+    global_path_pub = node.create_publisher(Path, "/global_path", 1)
+    obstacle_list_pub = node.create_publisher(Float32MultiArray, "/obstacle_list", 1)
     print("Initialized! ROS Node")
+
+    # Spin in background thread so callbacks are processed asynchronously
+    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    spin_thread.start()
 
 
 
@@ -412,15 +418,15 @@ def main():
 
     ############################## Main Loop ##############################
     count = 0
-    while not rospy.is_shutdown():
+    while rclpy.ok():
 
         count += 1
-        rospy.loginfo_throttle(1.0, "\n==================================== LOOP ====================================")
-        rospy.loginfo_throttle(1.0, "ROSPY in loop. ROSTime is, %f and count is %d", rospy.get_time(), count)
+        node.get_logger().info("\n==================================== LOOP ====================================", throttle_duration_sec=1.0)
+        node.get_logger().info("In loop. ROSTime is, %f and count is %d" % (node.get_clock().now().nanoseconds * 1e-9, count), throttle_duration_sec=1.0)
 
         # ==================================== ROS  ====================================
 
-        if rospy.get_time() > initialization_time:
+        if node.get_clock().now().nanoseconds * 1e-9 > initialization_time:
 
             if do_RRT_globalplanning and not asynchronous_globalplanning:
                 global_map.Update_map(global_planner.path, visualize_map=debugging_visualization)
@@ -438,7 +444,7 @@ def main():
                 # Publish costmap (toggle between Float32MultiArray and GridMap)
                 if use_gridmap_msg:
                     publish_costmap_gridmap(global_map, frame_id, global_costmap_pub, pub_locally, global_planner,
-                                            step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon)
+                                            step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon, node=node)
                 else:
                     publish_costmap_float32multiarray(global_map, frame_id, global_costmap_pub, pub_locally, global_planner,
                                                     step_T, localmap_getwaypoint_horizonmultiplier, MPC_horizon)
@@ -451,7 +457,7 @@ def main():
 
                     global_path_msg = Path()
                     global_path_msg.header.frame_id = frame_id
-                    global_path_msg.header.stamp = rospy.Time.now()
+                    global_path_msg.header.stamp = node.get_clock().now().to_msg()
                     for pt in global_planner.path:
                         pose = PoseStamped()
                         pose.header.frame_id = frame_id
@@ -479,8 +485,9 @@ def main():
 
     #----------
     #Signal Shutdown when loop is exited
-    rate.sleep()
-    rospy.signal_shutdown("Finished execution")
+    sleep(1.0)
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 
@@ -489,8 +496,10 @@ if __name__ == '__main__':
 
     try:
         main()
-    except rospy.ROSInterruptException:
+    except KeyboardInterrupt:
         pass
     finally:
-        # Call rospy.signal_shutdown() to stop the node when the code is finished
-        rospy.signal_shutdown("Finished execution")
+        try:
+            rclpy.shutdown()
+        except Exception:
+            pass
