@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mmcv.ops import MultiScaleDeformableAttention
+# from mmcv.ops import MultiScaleDeformableAttention
 import torchvision.models as models
 
 
@@ -56,55 +56,55 @@ class ResNetFeatureExtractor(nn.Module):
 # ------------------------------
 # Deformable Attention Module
 # ------------------------------
-class DeformableAttentionModule(nn.Module):
-    def __init__(self, embed_dim, num_heads, num_levels, num_points):
-        super(DeformableAttentionModule, self).__init__()
+# class DeformableAttentionModule(nn.Module):
+#     def __init__(self, embed_dim, num_heads, num_levels, num_points):
+#         super(DeformableAttentionModule, self).__init__()
         
-        self.deformable_attention = MultiScaleDeformableAttention(
-            embed_dims=embed_dim,
-            num_heads=num_heads,
-            num_levels=num_levels,
-            num_points=num_points
-        )
+#         self.deformable_attention = MultiScaleDeformableAttention(
+#             embed_dims=embed_dim,
+#             num_heads=num_heads,
+#             num_levels=num_levels,
+#             num_points=num_points
+#         )
 
-    def forward(self, x):
-        """
-        Args:
-            x: Tensor of shape (B, embed_dim, H, W)
-        """
-        B, embed_dim, H, W = x.size()
+#     def forward(self, x):
+#         """
+#         Args:
+#             x: Tensor of shape (B, embed_dim, H, W)
+#         """
+#         B, embed_dim, H, W = x.size()
         
-        # Flatten spatial dimensions -> (HW, B, C)
-        x_flat = x.view(B, embed_dim, -1).permute(2, 0, 1)  # (H*W, B, embed_dim)
+#         # Flatten spatial dimensions -> (HW, B, C)
+#         x_flat = x.view(B, embed_dim, -1).permute(2, 0, 1)  # (H*W, B, embed_dim)
 
-        # Spatial shapes and level index
-        spatial_shapes = torch.tensor([[H, W]], device=x.device, dtype=torch.long)
-        level_start_index = torch.tensor([0], device=x.device, dtype=torch.long)
+#         # Spatial shapes and level index
+#         spatial_shapes = torch.tensor([[H, W]], device=x.device, dtype=torch.long)
+#         level_start_index = torch.tensor([0], device=x.device, dtype=torch.long)
         
-        # Reference points in [0,1] for deformable attention
-        grid_y, grid_x = torch.meshgrid(
-            torch.linspace(0.0, 1.0, H, device=x.device),
-            torch.linspace(0.0, 1.0, W, device=x.device),
-            indexing="ij"
-        )
-        reference_points = torch.stack((grid_x, grid_y), dim=-1).view(1, H * W, 1, 2)
-        reference_points = reference_points.repeat(B, 1, spatial_shapes.size(0), 1)  # (B, H*W, num_levels, 2)
+#         # Reference points in [0,1] for deformable attention
+#         grid_y, grid_x = torch.meshgrid(
+#             torch.linspace(0.0, 1.0, H, device=x.device),
+#             torch.linspace(0.0, 1.0, W, device=x.device),
+#             indexing="ij"
+#         )
+#         reference_points = torch.stack((grid_x, grid_y), dim=-1).view(1, H * W, 1, 2)
+#         reference_points = reference_points.repeat(B, 1, spatial_shapes.size(0), 1)  # (B, H*W, num_levels, 2)
 
-        # Deformable attention
-        x_attn = self.deformable_attention(
-            query=x_flat,
-            key=None,
-            value=None,
-            query_pos=None,
-            key_pos=None,
-            reference_points=reference_points,
-            spatial_shapes=spatial_shapes,
-            level_start_index=level_start_index
-        )
+#         # Deformable attention
+#         x_attn = self.deformable_attention(
+#             query=x_flat,
+#             key=None,
+#             value=None,
+#             query_pos=None,
+#             key_pos=None,
+#             reference_points=reference_points,
+#             spatial_shapes=spatial_shapes,
+#             level_start_index=level_start_index
+#         )
         
-        # Reshape back to (B, embed_dim, H, W)
-        x_out = x_attn.permute(1, 2, 0).view(B, embed_dim, H, W)
-        return x_out
+#         # Reshape back to (B, embed_dim, H, W)
+#         x_out = x_attn.permute(1, 2, 0).view(B, embed_dim, H, W)
+#         return x_out
     
 
 class TransformerFeatureExtractor(nn.Module):
@@ -285,12 +285,12 @@ class ElevationOnlyNetworkMSE(nn.Module):
 
         # 2. Spatial/Deformable attention modules (optional usage)
         self.spatial_attention = SpatialAttention(kernel_size=3)
-        self.deformable_attention = DeformableAttentionModule(
-            embed_dim=embed_dim, 
-            num_heads=num_heads, 
-            num_levels=num_levels, 
-            num_points=num_points
-        )
+        # self.deformable_attention = DeformableAttentionModule(
+        #     embed_dim=embed_dim, 
+        #     num_heads=num_heads, 
+        #     num_levels=num_levels, 
+        #     num_points=num_points
+        # )
 
         # 3. Decoder => MLP or Transformer
         if decoder_type.lower() == "mlp":
@@ -342,7 +342,7 @@ class ElevationOnlyNetworkMSE(nn.Module):
 
         # [Optional] spatial/deformable attention
         features = self.spatial_attention(features)
-        features = self.deformable_attention(features)
+        # features = self.deformable_attention(features)
 
         if self.decoder_type == "mlp":
             # Pool => (B, C)
@@ -427,12 +427,12 @@ class ElevationOnlyNetworkMLL(nn.Module):
 
         # 2. Attention Modules (optional)
         self.spatial_attention = SpatialAttention(kernel_size=3)
-        self.deformable_attention = DeformableAttentionModule(
-            embed_dim=embed_dim, 
-            num_heads=num_heads, 
-            num_levels=num_levels, 
-            num_points=num_points
-        )
+        # self.deformable_attention = DeformableAttentionModule(
+        #     embed_dim=embed_dim, 
+        #     num_heads=num_heads, 
+        #     num_levels=num_levels, 
+        #     num_points=num_points
+        # )
 
         # 3. Decoder
         self.decoder_type = decoder_type.lower()
@@ -489,7 +489,7 @@ class ElevationOnlyNetworkMLL(nn.Module):
 
         # Optionally apply attention
         features = self.spatial_attention(features)
-        features = self.deformable_attention(features)
+        # features = self.deformable_attention(features)
 
         if self.decoder_type == "mlp":
             x = F.adaptive_avg_pool2d(features, (1, 1)).view(B, -1)

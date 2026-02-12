@@ -305,7 +305,7 @@ class BaseMap:
 
         if load_Travformer:
             root_dir = os.path.dirname(os.path.abspath(__file__))
-            elevonly_vw2instab_model_checkpoint = os.path.join(root_dir + "/checkpoints/elevonly_vw2instab.pth")
+            elevonly_vw2instab_model_checkpoint = os.path.join(root_dir + "/checkpoints/tempnodeform.pth")
             self.elevonly_vw2instab_model = _load_model(elevonly_vw2instab_model_checkpoint, model_type='Travformer', device=self.device)
             print("Travformer model loaded.")
         else:
