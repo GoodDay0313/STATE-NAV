@@ -138,7 +138,7 @@ class CMDbasedMapWithBackend(CMDbasedMap):
                 self.is_TraversabilityMap_built = True
                 self.backend.set_trav_map_built(True)
     
-    def Update_map(self, path_plan=None, visualize_map=False, movable_obstacles=None):
+    def Update_map(self, path_plan=None, visualize_map=False):
         """
         Update map with synchronization
         
@@ -150,7 +150,7 @@ class CMDbasedMapWithBackend(CMDbasedMap):
         
         try:
             # Call parent's Update_map (all existing code works!)
-            super().Update_map(path_plan, visualize_map, movable_obstacles)
+            super().Update_map(path_plan, visualize_map)
             
             # After updates, increment version and update flags
             if self.use_shared_memory:

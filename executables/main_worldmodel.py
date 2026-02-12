@@ -4,7 +4,6 @@ import math
 from omegaconf import OmegaConf
 from pathlib import Path as PathLib
 
-import statenav_global
 from statenav_global.mapping import *
 import statenav_global.mapping.WorldModel as WorldModel
 from statenav_global.mapping.ros_utils import publish_costmap_float32multiarray, publish_costmap_gridmap
@@ -85,6 +84,7 @@ class WorldModelNode:
         
         # Initialize ROS
         self._init_ros(init_ros)
+        self.init_clock = None
         
         # Determine shared memory mode
         self.use_shared_memory = use_shared_memory if use_shared_memory is not None else (

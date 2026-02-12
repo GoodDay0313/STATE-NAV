@@ -3,8 +3,8 @@ import numpy as np
 import math
 from omegaconf import OmegaConf
 
-import statenav_global
-from statenav_global import CMDbasedMap, LearnedInSMap
+from statenav_global.planners import GlobalRRTStar
+from statenav_global.mapping import CMDbasedMap, LearnedInSMap
 from statenav_global.mapping.globalmap_with_backend import CMDbasedMapReaderProxy
 from statenav_global.mapping.shared_memory_backend import SharedMemoryBackend
 from statenav_global.mapping.ros_utils import populate_map_from_float32multiarray, populate_map_from_gridmap
@@ -203,7 +203,7 @@ class PlanningNode:
         branch_length_max = self.cfg.branch_length_max_ratio * diagonal
         search_radius = self.cfg.search_radius_ratio * diagonal
         
-        self.global_planner = statenav_global.planners.GlobalRRTStar(
+        self.global_planner = GlobalRRTStar(
             self.task_extent, self.rng, self.initial_start, self.global_goal, self.heading_start,
             goal_radius=diagonal * self.cfg.goal_radius_ratio,
             branch_length_max=branch_length_max,

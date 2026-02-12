@@ -70,6 +70,7 @@ savemap: 1
 debugging_visualization: False 
 
 
+obs_clearance: 0.1  # m
 
 # ==================== Traversability Estimation Configuration ====================
 # Resolution for traversability estimation grid in meters

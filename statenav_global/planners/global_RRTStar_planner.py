@@ -178,7 +178,7 @@ class GlobalRRTStar(BasePlanner):
                 # Check if Converged
                 # print("extract path")
                 if self.current_iter == self.iter_max - 1:
-                    self.is_goal_reached = self.search_goal_parent(print_costs = True)
+                    self.is_goal_reached = self.search_goal_parent()
                 else:
                     self.is_goal_reached = self.search_goal_parent() #returns False if not reached yet
                 if self.is_goal_reached:
