@@ -8,6 +8,7 @@ All methods work unchanged - they just use arrays from backend.
 IMPORTANT: Call backend.cleanup() on shutdown to free shared memory!
 """
 
+import math
 import numpy as np
 import atexit
 try:
@@ -15,8 +16,8 @@ try:
 except ImportError:
     rospy = None
 
-from statenav_global.mapping.globalmap import CMDbasedMap, BaseMap
-from statenav_global.mapping.shared_memory_backend import SharedMemoryBackend, LocalMemoryBackend
+from statenav_global.world_model.globalmap import CMDbasedMap, BaseMap, cfg
+from statenav_global.world_model.shared_memory_backend import SharedMemoryBackend, LocalMemoryBackend
 
 
 class CMDbasedMapWithBackend(CMDbasedMap):
@@ -32,7 +33,7 @@ class CMDbasedMapWithBackend(CMDbasedMap):
     
     def __init__(self, env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y,
                  which_layer, preest_update_resolution, instab_limit,
-                 load_Travformer=True, load_MapReconstructor=False,
+                 load_Travformer=True,
                  backend=None, use_shared_memory=False):
         """
         Initialize CMDbasedMap with backend
@@ -45,7 +46,7 @@ class CMDbasedMapWithBackend(CMDbasedMap):
         # Initialize parent class (but don't create arrays yet)
         super().__init__(env_xmin, env_xmax, env_ymin, env_ymax, goal_x, goal_y,
                         which_layer, preest_update_resolution, instab_limit,
-                        load_Travformer, load_MapReconstructor)
+                        load_Travformer)
         
         # Set up backend
         if backend is None:
@@ -87,30 +88,21 @@ class CMDbasedMapWithBackend(CMDbasedMap):
                 self.is_ElevationMap_built = True
             
             # Calculate dimensions
-            self.ElevationMap_size_rows = int(self.ElevationMap_size_x / self.map_resolution)
-            self.ElevationMap_size_cols = int(self.ElevationMap_size_y / self.map_resolution)
-            
-            self.TraversabilityMap_size_rows = int(self.TraversabilityMap_size_x / self.map_resolution)
-            self.TraversabilityMap_size_cols = int(self.TraversabilityMap_size_y / self.map_resolution)
-            
-            self.ElevMap_MetaInfo_size_rows = int(self.ElevMap_MetaInfo_size_x / self.map_resolution)
-            self.ElevMap_MetaInfo_size_cols = int(self.ElevMap_MetaInfo_size_y / self.map_resolution)
-            
-            self.TravMap_MetaInfo_size_rows = int(self.TravMap_MetaInfo_size_x / self.map_resolution)
-            self.TravMap_MetaInfo_size_cols = int(self.TravMap_MetaInfo_size_y / self.map_resolution)
+            self.map_size_rows = int(self.map_size_x / self.map_resolution)
+            self.map_size_cols = int(self.map_size_y / self.map_resolution)
             
             # Initialize backend with dimensions
             self.backend.initialize_arrays(
-                elev_map_rows=self.ElevationMap_size_rows,
-                elev_map_cols=self.ElevationMap_size_cols,
-                trav_map_rows=self.TraversabilityMap_size_rows,
-                trav_map_cols=self.TraversabilityMap_size_cols,
+                elev_map_rows=self.map_size_rows,
+                elev_map_cols=self.map_size_cols,
+                trav_map_rows=self.map_size_rows,
+                trav_map_cols=self.map_size_cols,
                 trav_map_layers=self.TraversabilityMap_size_layers,
                 map_resolution=self.map_resolution,
-                elev_map_xmin=self.ElevationMap_xmin,
-                elev_map_xmax=self.ElevationMap_xmax,
-                elev_map_ymin=self.ElevationMap_ymin,
-                elev_map_ymax=self.ElevationMap_ymax
+                elev_map_xmin=self.map_xmin,
+                elev_map_xmax=self.map_xmax,
+                elev_map_ymin=self.map_ymin,
+                elev_map_ymax=self.map_ymax
             )
             
             # Get arrays from backend (these point to shared memory if using it)
@@ -122,21 +114,9 @@ class CMDbasedMapWithBackend(CMDbasedMap):
             # Initialize with default values (same as original)
             self.TraversabilityMap[:,:,:,0] = self.InitialGuess_cmd_v
             self.TraversabilityMap[:,:,:,1] = self.InitialGuess_cmd_w
-            self.TraversabilityMap[:,:,:,2] = self.InitialGuess_auxiliary_score
-            self.TraversabilityMap[:,:,:,3] = self.InitialGuess_auxiliary_score_std
+            self.TraversabilityMap[:,:,:,2] = np.nan
+            self.TraversabilityMap[:,:,:,3] = np.nan
             
-            # Ensure TraversabilityMap bounds are set (needed for xy2grid, etc.)
-            self.TraversabilityMap_xmin = self.ElevationMap_xmin
-            self.TraversabilityMap_xmax = self.ElevationMap_xmax
-            self.TraversabilityMap_ymin = self.ElevationMap_ymin
-            self.TraversabilityMap_ymax = self.ElevationMap_ymax
-            
-            # Mark as built in backend
-            self.backend.set_elev_map_built(True)
-            
-            if not self.is_TraversabilityMap_built:
-                self.is_TraversabilityMap_built = True
-                self.backend.set_trav_map_built(True)
     
     def Update_map(self, path_plan=None, visualize_map=False):
         """
@@ -152,27 +132,14 @@ class CMDbasedMapWithBackend(CMDbasedMap):
             # Call parent's Update_map (all existing code works!)
             super().Update_map(path_plan, visualize_map)
             
-            # After updates, increment version and update flags
+            # After updates, increment version
             if self.use_shared_memory:
-                self.backend.set_trav_map_built(self.is_TraversabilityMap_built)
-                self.backend.set_elev_map_built(self.is_ElevationMap_built)
                 self.backend.increment_version()
         
         finally:
             if self.use_shared_memory:
                 # Always release lock
                 self.backend.release_write_lock()
-    
-    def pose_callback(self, msg):
-        """
-        Update robot pose (also update in shared memory)
-        """
-        # Call parent's pose_callback
-        super().pose_callback(msg)
-        
-        # Also update in shared memory backend
-        if self.use_shared_memory:
-            self.backend.set_robot_pose(self.robot_x, self.robot_y, self.robot_heading)
     
     def get_backend(self):
         """Get backend instance (for access to metadata, version, etc.)"""
@@ -219,10 +186,9 @@ class CMDbasedMapReaderProxy(CMDbasedMap):
             goal_x=0.0,  # Will be set separately if needed
             goal_y=0.0,
             which_layer=[],  # Not used in reader
-            preest_update_resolution=0.0,  # Not used in reader
+            preest_update_resolution=cfg.trav_estimation_resoultion,  # Must match writer
             instab_limit=0.0,  # Not used in reader
             load_Travformer=False,  # Don't load models in reader
-            load_MapReconstructor=False
         )
         
         # Register cleanup handlers
@@ -239,49 +205,21 @@ class CMDbasedMapReaderProxy(CMDbasedMap):
         # Set map parameters from backend metadata
         self.map_resolution = backend.get_map_resolution()
         bounds = backend.get_map_bounds()
-        self.ElevationMap_xmin = bounds[0]
-        self.ElevationMap_xmax = bounds[1]
-        self.ElevationMap_ymin = bounds[2]
-        self.ElevationMap_ymax = bounds[3]
-        
-        # TraversabilityMap uses same bounds as ElevationMap
-        self.TraversabilityMap_xmin = bounds[0]
-        self.TraversabilityMap_xmax = bounds[1]
-        self.TraversabilityMap_ymin = bounds[2]
-        self.TraversabilityMap_ymax = bounds[3]
+        self.map_xmin = bounds[0]
+        self.map_xmax = bounds[1]
+        self.map_ymin = bounds[2]
+        self.map_ymax = bounds[3]
         
         # Set dimensions
         dims = backend.get_map_dimensions()
-        self.TraversabilityMap_size_rows = dims['trav_map_rows']
-        self.TraversabilityMap_size_cols = dims['trav_map_cols']
         self.TraversabilityMap_size_layers = dims['trav_map_layers']
-        self.ElevationMap_size_rows = dims['elev_map_rows']
-        self.ElevationMap_size_cols = dims['elev_map_cols']
+        self.map_size_rows = dims['elev_map_rows']
+        self.map_size_cols = dims['elev_map_cols']
         
         # Size attributes for consistency (calculated from bounds)
-        self.ElevationMap_size_x = self.ElevationMap_xmax - self.ElevationMap_xmin
-        self.ElevationMap_size_y = self.ElevationMap_ymax - self.ElevationMap_ymin
-        self.TraversabilityMap_size_x = self.TraversabilityMap_xmax - self.TraversabilityMap_xmin
-        self.TraversabilityMap_size_y = self.TraversabilityMap_ymax - self.TraversabilityMap_ymin
+        self.map_size_x = self.map_xmax - self.map_xmin
+        self.map_size_y = self.map_ymax - self.map_ymin
         
-        # MetaInfo size attributes (same as their corresponding maps)
-        self.ElevMap_MetaInfo_xmin = self.ElevationMap_xmin
-        self.ElevMap_MetaInfo_xmax = self.ElevationMap_xmax
-        self.ElevMap_MetaInfo_ymin = self.ElevationMap_ymin
-        self.ElevMap_MetaInfo_ymax = self.ElevationMap_ymax
-        self.ElevMap_MetaInfo_size_x = self.ElevationMap_size_x
-        self.ElevMap_MetaInfo_size_y = self.ElevationMap_size_y
-        self.ElevMap_MetaInfo_size_rows = dims['elev_map_rows']
-        self.ElevMap_MetaInfo_size_cols = dims['elev_map_cols']
-        
-        self.TravMap_MetaInfo_xmin = self.TraversabilityMap_xmin
-        self.TravMap_MetaInfo_xmax = self.TraversabilityMap_xmax
-        self.TravMap_MetaInfo_ymin = self.TraversabilityMap_ymin
-        self.TravMap_MetaInfo_ymax = self.TraversabilityMap_ymax
-        self.TravMap_MetaInfo_size_x = self.TraversabilityMap_size_x
-        self.TravMap_MetaInfo_size_y = self.TraversabilityMap_size_y
-        self.TravMap_MetaInfo_size_rows = dims['trav_map_rows']
-        self.TravMap_MetaInfo_size_cols = dims['trav_map_cols']
         self.TravMap_MetaInfo_size_layers = dims['trav_map_layers']
         
         # Map parameters (same as CMDbasedMap)
@@ -294,19 +232,31 @@ class CMDbasedMapReaderProxy(CMDbasedMap):
         self.TravMap_MetaInfo_theta_resolution = self.TraversabilityMap_theta_resolution
         self.TravMap_MetaInfo_theta_max = self.TraversabilityMap_theta_max
         
-        # State flags (initial values, will be updated from backend)
-        self.is_TraversabilityMap_built = backend.get_trav_map_built()
-        self.is_ElevationMap_built = backend.get_elev_map_built()
+        # is_TraversabilityMap_built / is_ElevationMap_built are defined as properties below.
         self.is_ElevMap_MetaInfo_built = True  # MetaInfo arrays are available from shared memory
         self.is_TravMap_MetaInfo_built = True
     
-    def update_map_flags(self):
-        """Update map built flags from shared memory backend."""
-        if hasattr(self, 'backend'):
-            self.is_TraversabilityMap_built = self.backend.get_trav_map_built()
-            self.is_ElevationMap_built = self.backend.get_elev_map_built()
-    
-    def _wait_and_initialize_backend(self, timeout: float = 30.0, check_interval: float = 0.1):
+    # ── Live-read properties: always reflect current backend state ───────────
+    # The parent's __init__ writes False to these; the no-op setters absorb those
+    # writes so instance attributes never shadow the backend values.
+
+    @property
+    def is_TraversabilityMap_built(self):
+        return self.backend.get_trav_map_built()
+
+    @is_TraversabilityMap_built.setter
+    def is_TraversabilityMap_built(self, value):
+        pass  # reader never owns this flag; writer updates shared memory directly
+
+    @property
+    def is_ElevationMap_built(self):
+        return self.backend.get_elev_map_built()
+
+    @is_ElevationMap_built.setter
+    def is_ElevationMap_built(self, value):
+        pass  # same as above
+
+    def _wait_and_initialize_backend(self, timeout: float = 120.0, check_interval: float = 0.1):
         """
         Wait for writer to initialize metadata AND create shared memory blocks, then initialize backend arrays.
         
@@ -371,13 +321,6 @@ class CMDbasedMapReaderProxy(CMDbasedMap):
                 rospy.loginfo_throttle(2.0, "[Reader] Still waiting for WorldModel to initialize shared memory...")
         
         raise RuntimeError(f"Timeout waiting for WorldModel to initialize shared memory ({timeout}s)")
-    
-    def update_robot_pose(self):
-        """Update robot pose from shared memory"""
-        robot_pose = self.backend.get_robot_pose()
-        self.robot_x = robot_pose[0]
-        self.robot_y = robot_pose[1]
-        self.robot_heading = robot_pose[2]
     
     def check_version(self):
         """Check if maps have been updated"""

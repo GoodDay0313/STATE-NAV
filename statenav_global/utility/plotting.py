@@ -5,6 +5,7 @@ Plotting tools for Sampling-based algorithms
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.font_manager as fm
 import numpy as np
 import os
 import sys
@@ -12,14 +13,34 @@ import sys
 # sys.path.append(os.path.dirname(os.path.abspath(__file__)) +
 #                 "/../../Sampling_based_Planning/")
 
+# Font and style constants matching globalmap.py
+_font_path = "/usr/share/fonts/truetype/msttcorefonts/Times_New_Roman.ttf"
+if os.path.exists(_font_path):
+    _fp = fm.FontProperties(fname=_font_path)
+else:
+    _fp = fm.FontProperties(family='serif')
+_FS_TICK   = 13
+_FS_LABEL  = 13
+_FS_LEGEND = 13
+_FS_TITLE  = 16
+_RC_PARAMS = {
+    'axes.facecolor': 'white',
+    'axes.edgecolor': 'black',
+    'axes.linewidth': 2,
+    'xtick.color': 'black',
+    'ytick.color': 'black',
+    'font.family': 'serif',
+    'font.serif': ['DejaVu Serif', 'Liberation Serif', 'Nimbus Roman'],
+}
+
 
 class Plotting:
-    def __init__(self, x_start, x_goal):
+    def __init__(self, x_start, x_goal, task_extent=None):
         self.xI, self.xG = x_start, x_goal
         self.obs_bound = []
         self.obs_circle = []
         self.obs_rectangle = []
-        self.obstacle = []
+        self.task_extent = task_extent  # [x_min, x_max, y_min, y_max]
 
     def animation(self, nodelist, path, name, animation=False):
         self.plot_grid(name)
@@ -31,25 +52,29 @@ class Plotting:
         self.plot_path(path)
 
 
-    def animation_interactive(self, nodelist, path, name, animation=False, nodes_before_obstacles=[], nodes_after_obstacles=[]):
-        self.plot_grid_interactive(name)
+    def animation_interactive(self, nodelist, path, name, animation=False):
+        self.plot_grid_interactive(name, fig_num=11)
         self.plot_visited_interactive(nodelist, animation)
         self.plot_path_interactive(path)
-
-        if len(nodes_before_obstacles) > 0 and len(nodes_after_obstacles) > 0:
-            self.plot_obstacle_nodes(nodes_before_obstacles, nodes_after_obstacles)
-            
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
 
-    def plot_grid_interactive(self, name):
-        
-        plt.close(4)
-        plt.figure(4)
-        # plt.ion()
-        self.fig, self.ax = plt.subplots(num=4)
-        manager = self.fig.canvas.manager
-        manager.window.setGeometry(1440, 0, 480, 400)  # Adjust the position and size as needed
+    def plot_grid_interactive(self, name, fig_num=11, win_size=(480, 400)):
+        attr_fig = f'_ifig{fig_num}'
+        attr_ax  = f'_iax{fig_num}'
+        if not hasattr(self, attr_fig) or not plt.fignum_exists(fig_num):
+            fig, ax = plt.subplots(num=fig_num)
+            setattr(self, attr_fig, fig)
+            setattr(self, attr_ax, ax)
+            manager = fig.canvas.manager
+            manager.window.setGeometry(1440, 0, win_size[0], win_size[1])
+        else:
+            fig = getattr(self, attr_fig)
+            fig.clf()                      # clear entire figure (axes + colorbars) — matches visualize_maps pattern
+            ax = fig.add_subplot(111)
+            setattr(self, attr_ax, ax)
+        self.fig = fig
+        self.ax  = ax
 
         for (ox, oy, w, h) in self.obs_bound:
             self.ax.add_patch(
@@ -71,31 +96,24 @@ class Plotting:
                 )
             )
 
-        for (ox, oy, r) in self.obs_circle:
-            self.ax.add_patch(
-                patches.Circle(
-                    (oy, ox), r,
-                    edgecolor='black',
-                    facecolor='red', alpha=0.3
-                )
-            )
-            
-        for path in self.obstacle:
-            patch = patches.PathPatch(path, facecolor='gray', lw=1)
-            self.ax.add_patch(patch)
 
         self.ax.plot(self.xI[1], self.xI[0], "bs", linewidth=0.5, markersize=4) # blue square in the beginning
         self.ax.plot(self.xG[1], self.xG[0], "gs", linewidth=0.5, markersize=4) # green square in the end
 
         self.ax.set_title(name, fontsize=15)
-        
+
+        if self.task_extent is not None:
+            x_min, x_max, y_min, y_max = self.task_extent
+            self.ax.set_xlim(y_min, y_max)  # horizontal axis = Y
+            self.ax.set_ylim(x_min, x_max)  # vertical axis = X
+
         # Invert x and y axes
         self.ax.invert_xaxis()
         # self.ax.invert_yaxis()
-        
+
         # Add grid
         self.ax.grid(True)
-        
+
         self.ax.set_xlabel('Y Axis')
         self.ax.set_ylabel('X Axis')
         
@@ -125,29 +143,6 @@ class Plotting:
             self.ax.plot([x[1] for x in path], [x[0] for x in path], '-r', linewidth=1) # red line on the path
             plt.pause(0.001)
 
-    def plot_obstacle_nodes(self, nodes_before_obstacles, nodes_after_obstacles):
-        """
-        Plot node_before_obstacle and node_after_obstacle markers on the current plot.
-        
-        Parameters
-        ----------
-        nodes_before_obstacles : list
-            List of nodes before obstacles
-        nodes_after_obstacles : list
-            List of nodes after obstacles
-        """
-        if len(nodes_before_obstacles) > 0 and len(nodes_after_obstacles) > 0:
-            for idx in range(len(nodes_before_obstacles)):
-                node_before = nodes_before_obstacles[idx]
-                node_after = nodes_after_obstacles[idx]
-                
-                # Plot node_before_obstacle in magenta
-                self.ax.plot(node_before.y, node_before.x, "c*", markersize=10, label="Before Obstacle" if idx == 0 else "")
-                # Plot node_after_obstacle in cyan
-                self.ax.plot(node_after.y, node_after.x, "c*", markersize=10, label="After Obstacle" if idx == 0 else "")
-            
-
-        
     def plot_grid(self, name):
         self.fig, ax = plt.subplots(figsize=(40,20))
 
@@ -180,10 +175,6 @@ class Plotting:
                 )
             )
             
-        for path in self.obstacle:
-            patch = patches.PathPatch(path, facecolor='gray', lw=1)
-            ax.add_patch(patch)
-
         ax.plot(self.xI[0], self.xI[1], "bs", linewidth=3)
         ax.plot(self.xG[0], self.xG[1], "gs", linewidth=3)
 

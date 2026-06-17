@@ -15,13 +15,13 @@ import torch
 def get_project_root():
     """
     Find the project root directory by looking for marker files.
-    
+
     Returns:
         Path: Path to the project root directory (where setup.py, package.xml, or CMakeLists.txt exists)
     """
     # Start from this file's directory
     current = Path(__file__).resolve()
-    
+
     # Walk up the directory tree looking for project root markers
     for parent in [current] + list(current.parents):
         # Check for common project root markers
@@ -29,10 +29,44 @@ def get_project_root():
            (parent / "package.xml").exists() or \
            (parent / "CMakeLists.txt").exists():
             return parent
-    
+
     # Fallback: if no marker found, assume project root is 3 levels up from this file
     # (statenav_global/utility/utils.py -> statenav_global -> state_nav)
     return current.parents[2]
+
+
+def get_source_inference_dir():
+    """
+    Return the path to statenav_global/inference/ in the SOURCE tree.
+
+    When running from an installed colcon package, __file__ points to the
+    install tree which lacks heavy assets (model weights, checkpoints/).
+    This helper detects that case and resolves to the source tree instead.
+    """
+    # Direct path: statenav_global/inference/ relative to this file
+    # (this file is statenav_global/utility/utils.py)
+    local_inference = Path(__file__).resolve().parent.parent / "inference"
+
+    # If the assets exist locally, we're running from source — use it directly
+    if (local_inference / "checkpoints").exists():
+        return str(local_inference)
+
+    # We're in the install tree. Resolve to source via colcon workspace layout:
+    #   install/<pkg>/lib/python3.x/site-packages/statenav_global/utility/utils.py
+    #   -> <ws_root>/src/state_nav/statenav_global/inference/
+    parts = Path(__file__).resolve().parts
+    try:
+        idx = parts.index("install")
+        ws_root = Path(*parts[:idx])
+        src_inference = ws_root / "src" / "state_nav" / "statenav_global" / "inference"
+        if src_inference.exists():
+            return str(src_inference)
+    except ValueError:
+        pass
+
+    # Fallback: return the local path (caller will get FileNotFoundError with a clear path)
+    return str(local_inference)
+
 
 def set_random_seed(seed):
     rng = np.random.RandomState(seed)
@@ -79,79 +113,6 @@ def get_ray(start, end):
 def get_dist(start, end):
     """Calculate Euclidean distance between two nodes."""
     return math.hypot(end.x - start.x, end.y - start.y)
-
-
-def point_in_polygon(node, polygon, delta=0.01):
-    """
-    Check if a point is inside a polygon.
-    
-    Args:
-        node: Node object with x and y attributes
-        polygon: List of [x, y] coordinates representing polygon vertices
-        delta: Tolerance value for point-in-polygon check (default: 0.01)
-    
-    Returns:
-        bool: True if point is inside polygon, False otherwise
-    """
-    polygon = np.array(polygon)
-    
-    num_vertices = len(polygon)
-    x, y = node.x, node.y
-    inside = False
-
-    # Store the first point in the polygon and initialize the second point
-    p1 = polygon[0]
-
-    # Loop through each edge in the polygon
-    for i in range(1, num_vertices + 1):
-        # Get the next point in the polygon
-        p2 = polygon[i % num_vertices]
-
-        # Check if the point is above the minimum y coordinate of the edge
-        if y + delta > min(p1[1], p2[1]):
-            # Check if the point is below the maximum y coordinate of the edge
-            if y - delta <= max(p1[1], p2[1]):
-                # Check if the point is to the left of the maximum x coordinate of the edge
-                if x - delta <= max(p1[0], p2[0]):
-                    # Calculate the x-intersection of the line connecting the point to the edge
-                    x_intersection = (y - p1[1]) * (p2[0] - p1[0]) / (p2[1] - p1[1]) + p1[0]
-
-                    # Check if the point is on the same line as the edge or to the left of the x-intersection
-                    if p1[0] == p2[0] or x <= x_intersection:
-                        # Flip the inside flag
-                        inside = not inside
-
-        # Store the current point as the first point for the next iteration
-        p1 = p2
-
-    # Return the value of the inside flag
-    return inside
-
-
-
-def is_intersect_polygon(self, start, end, path, delta = 0):
-    # Calculate the distance between the two points
-    dist = get_dist(start, end)
-    
-    # Calculate the number of steps needed
-    num_steps = int(dist / 0.01)
-    
-    if num_steps > 1:
-        # Calculate the step size in each dimension
-        step_x = (end.x - start.x) / num_steps
-        step_y = (end.y - start.y) / num_steps
-        
-        # Interpolated Nodes
-        for i in range(num_steps):
-            if i == 0:
-                continue
-            
-            new_x = start.x + i * step_x
-            new_y = start.y + i * step_y
-            
-            interp_node = BasicNode((new_x, new_y))
-            if point_in_polygon(interp_node, path.vertices, delta):
-                return True
 
 
 def is_intersect_rec(start, end, o, d, a, b):
@@ -225,9 +186,6 @@ def is_inside_circles(node, circles, delta=None):
     return False
 
 
-
-
-
 class BasicNode:
     def __init__(self, n):
         self.x = n[0]
@@ -241,12 +199,6 @@ class Utils:
         self.obs_circle = []
         self.obs_rectangle = []
         self.obs_boundary = []
-        self.obstacle = []
-
-    def update_obs(self, obs_cir, obs_bound, obs_rec):
-        self.obs_circle = obs_cir
-        self.obs_boundary = obs_bound
-        self.obs_rectangle = obs_rec
 
     def get_obs_vertex(self):
         delta = self.delta
@@ -291,10 +243,6 @@ class Utils:
         for (x, y, r) in self.obs_circle:
             if self.is_intersect_circle(o, d, (x, y), r):
                 return True
-            
-        for path in self.obstacle:
-            if self.is_intersect_polygon(start, end, path):
-                return True
 
         return False
     
@@ -314,19 +262,9 @@ class Utils:
                     and 0 <= node.y - (y - delta) <= h + 2 * delta:
                 return True
 
-        # for (x, y, w, h) in self.obs_boundary:
-        #     if 0 <= node.x - (x - delta) <= w + 2 * delta \
-        #             and 0 <= node.y - (y - delta) <= h + 2 * delta:
-        #         return True
-            
         for (x, y, w, h) in self.obs_boundary:
             if 0 <= node.x - (x) <= w \
                     and 0 <= node.y - (y) <= h:
-                return True
-            
-        for path in self.obstacle:
-            # print(path)
-            if point_in_polygon(node, path.vertices, delta):
                 return True
 
         return False
@@ -337,10 +275,6 @@ Utils.set_random_seed = set_random_seed
 Utils.wrap_to_pi = wrap_to_pi
 Utils.get_ray = get_ray
 Utils.get_dist = get_dist
-Utils.point_in_polygon = point_in_polygon
-Utils.is_intersect_polygon = is_intersect_polygon
 Utils.is_intersect_rec = is_intersect_rec
 Utils.is_intersect_circle = is_intersect_circle
 Utils.is_inside_circle = is_inside_circle
-    
-    

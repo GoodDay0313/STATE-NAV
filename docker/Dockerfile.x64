@@ -1,62 +1,86 @@
-FROM nvidia/cuda:11.6.2-cudnn8-devel-ubuntu20.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
-# Set noninteractive mode for apt-get
-ENV DEBIAN_FRONTEND=noninteractive
+ARG ROS_DISTRO=humble
+ARG RMW_NAME=cyclonedds
 
-# Preconfigure tzdata
-RUN echo "Etc/UTC" > /etc/timezone && \
-    ln -fs /usr/share/zoneinfo/Etc/UTC /etc/localtime && \
-    apt-get update && apt-get install -y tzdata && \
-    dpkg-reconfigure --frontend noninteractive tzdata
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
+    TZ=Etc/UTC \
+    PYTHONUNBUFFERED=1 \
+    ROS_DISTRO=${ROS_DISTRO} \
+    RMW_IMPLEMENTATION=rmw_${RMW_NAME}_cpp \
+    ROS_DOMAIN_ID=0
 
-# Install Python
-RUN apt-get update && apt-get install -y \
-    python3.8 \
-    python3-pip \
-    git
-
-# Install PyTorch
-COPY requirements.txt /tmp/requirements.txt
-RUN pip3 install -r /tmp/requirements.txt
-RUN pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-
-# Install other Python packages
-RUN pip3 install cupy-cuda11x scikit-learn
-RUN pip3 install 'git+https://github.com/facebookresearch/detectron2.git'
-
-# Install ROS
-RUN apt-key adv --keyserver 'hkp://keyserver.ubuntu.com:80' --recv-key C1CF6E31E6BADE8868B172B4F42ED6FBAB17C654
-RUN sh -c 'echo "deb http://packages.ros.org/ros/ubuntu focal main" > /etc/apt/sources.list.d/ros-latest.list'
-
+# System deps (+ Qt/X11 runtime for matplotlib QtAgg / PyQt5)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ros-noetic-desktop-full
+        locales \
+        tzdata \
+        curl \
+        gnupg2 \
+        lsb-release \
+        git \
+        python3-pip \
+        libgl1-mesa-glx \
+        libxkbcommon-x11-0 \
+        libxcb-icccm4 \
+        libxcb-image0 \
+        libxcb-keysyms1 \
+        libxcb-randr0 \
+        libxcb-render-util0 \
+        libxcb-shape0 \
+        libxcb-xfixes0 \
+        libxcb-xinerama0 \
+        libxcb-cursor0 \
+    && locale-gen ${LANG} \
+    && ln -fs /usr/share/zoneinfo/${TZ} /etc/localtime \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install ROS packages
-RUN apt install -y ros-noetic-pybind11-catkin \
-    ros-noetic-grid-map-core ros-noetic-grid-map-msgs ros-noetic-grid-map-ros ros-noetic-grid-map-rviz-plugin \
-    libopencv-dev \
-    libeigen3-dev \
-    libgmp-dev \
-    libmpfr-dev \
-    libboost-all-dev \
-    ros-noetic-turtlebot3-gazebo ros-noetic-turtlebot3-teleop \
-    ros-noetic-ros-numpy
+# ROS2 base + runtime deps for statenav_global / elevation_mapping_cupy.
+# Mounted workspace overlays provide custom msgs (e.g. elevation_map_msgs) and
+# ros2_numpy (no humble apt package — build from source in core_ws).
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+        http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+        | tee /etc/apt/sources.list.d/ros2.list > /dev/null \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        ros-${ROS_DISTRO}-ros-base \
+        ros-${ROS_DISTRO}-rmw-${RMW_NAME}-cpp \
+        ros-${ROS_DISTRO}-grid-map-msgs \
+        ros-${ROS_DISTRO}-nav-msgs \
+        ros-${ROS_DISTRO}-tf-transformations \
+        ros-${ROS_DISTRO}-tf2-ros \
+        ros-${ROS_DISTRO}-tf2-geometry-msgs \
+        ros-${ROS_DISTRO}-sensor-msgs \
+        ros-${ROS_DISTRO}-std-srvs \
+        ros-${ROS_DISTRO}-message-filters \
+        ros-${ROS_DISTRO}-image-transport \
+        ros-${ROS_DISTRO}-cv-bridge \
+        ros-${ROS_DISTRO}-ament-index-python \
+        ros-${ROS_DISTRO}-rosbag2 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install catkin-tools
-ENV TURTLEBOT3_MODEL=waffle
+# statenav setup deps
+RUN python3 -m pip install -U pip wheel setuptools
+RUN python3 -m pip install pyyaml "black==21.12b0" unidiff "uvloop==0.17.0"
 
+# Torch CUDA wheels first, then remaining requirements.txt deps
+RUN python3 -m pip install -U \
+        --index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://pypi.org/simple \
+        torch torchvision torchaudio
 
-# Misc
-RUN apt install -y gedit
+COPY requirements.txt /tmp/requirements.txt
+# --ignore-installed: apt/distutils packages (e.g. transforms3d) cannot be uninstalled by pip
+RUN python3 -m pip install -U \
+        --ignore-installed \
+        --index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://pypi.org/simple \
+        -r /tmp/requirements.txt
 
-# Global RRT*, Mapping and Travformer
-RUN pip3 install transforms3d
-RUN python3 -c 'import torch;print(torch.__version__);print(torch.version.cuda)'
-RUN pip3 install mmcv==2.2.0 -f https://download.openmmlab.com/mmcv/dist/cu118/torch2.4/index.html
-RUN pip3 install pandas
-RUN apt-get update && \
-    echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections && \
-    apt-get install -y ttf-mscorefonts-installer && \
-    fc-cache -f -v
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /etc/bash.bashrc
 
-
+CMD ["/bin/bash"]

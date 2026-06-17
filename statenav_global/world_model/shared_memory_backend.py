@@ -14,12 +14,44 @@ Design Philosophy:
 import numpy as np
 import multiprocessing as mp
 from multiprocessing import shared_memory
+from multiprocessing import resource_tracker
 from typing import Tuple, Optional, Dict
 import time
 import ctypes
 import atexit
 import signal
 import sys
+
+
+# ---------------------------------------------------------------------------
+# Metadata shared memory layout
+# Scalar fields only; locks (mp.Lock / mp.RLock) are kept as mp primitives.
+# ---------------------------------------------------------------------------
+_META_SHM_NAME = 'statenav_meta_shm'
+
+_META_DTYPE = np.dtype([
+    ('version',                np.int32),
+    ('is_trav_map_built',      np.uint8),
+    ('is_elev_map_built',      np.uint8),
+    ('map_resolution',         np.float64),
+    ('elev_map_rows',          np.int32),
+    ('elev_map_cols',          np.int32),
+    ('trav_map_rows',          np.int32),
+    ('trav_map_cols',          np.int32),
+    ('trav_map_layers',        np.int32),
+    ('elev_map_xmin',          np.float64),
+    ('elev_map_xmax',          np.float64),
+    ('elev_map_ymin',          np.float64),
+    ('elev_map_ymax',          np.float64),
+], align=True)
+
+
+class _NoLock:
+    """Drop-in lock replacement that does nothing (cross-process locking not needed)."""
+    def acquire(self): pass
+    def release(self): pass
+    def __enter__(self): pass
+    def __exit__(self, *a): pass
 
 
 class SharedMemoryBackend:
@@ -35,32 +67,24 @@ class SharedMemoryBackend:
     CMDbasedMap uses this backend instead of creating arrays directly.
     """
     
-    def __init__(self, mode='writer', shared_metadata=None):
+    def __init__(self, mode='writer'):
         """
         Initialize backend
-        
+
         Args:
             mode: 'writer' (creates shared memory) or 'reader' (attaches to existing)
-            shared_metadata: Optional SharedMetadata object from parent process.
-                           If None, creates new metadata (for separate processes).
-                           If provided, uses shared metadata (for parent-spawned processes).
         """
         self.mode = mode
         self._initialized = False
-        
+
         # Shared memory blocks
         self.shm_blocks = {}
-        
+
         # Array views (these point to shared memory)
         self.arrays = {}
-        
-        # Metadata (stored in shared memory for coordination)
-        if shared_metadata is not None:
-            # Use shared metadata from parent (parent-spawning approach)
-            self.metadata = shared_metadata
-        else:
-            # Create new metadata (separate processes approach)
-            self.metadata = self._create_metadata()
+
+        # Metadata (backed by named shared memory)
+        self.metadata = self._create_metadata()
         
         # Register cleanup handlers for crash recovery
         if mode == 'writer':
@@ -71,43 +95,116 @@ class SharedMemoryBackend:
         
     def _create_metadata(self):
         """
-        Create shared metadata structure
-        
-        Note: This creates NEW metadata. For parent-spawning approach,
-        pass shared_metadata from parent to __init__ instead.
+        Create shared metadata structure backed by named shared memory.
+
+        Scalar fields live in a named SharedMemory block (_META_SHM_NAME) so
+        that any process can attach by name without a shared parent.
+        Locks are kept as mp.Lock / mp.RLock (process-local, not shared).
         """
+        mode = self.mode  # capture for closure
+
         class SharedMetadata:
             def __init__(self):
-                # Version tracking (atomic)
-                self.version = mp.Value('i', 0)
-                
-                # Map state flags (atomic)
-                self.is_trav_map_built = mp.Value('b', False)
-                self.is_elev_map_built = mp.Value('b', False)
-                
-                # Map parameters (set once, then read-only)
-                self.map_resolution = mp.Value('d', 0.0)
-                self.elev_map_rows = mp.Value('i', 0)
-                self.elev_map_cols = mp.Value('i', 0)
-                self.trav_map_rows = mp.Value('i', 0)
-                self.trav_map_cols = mp.Value('i', 0)
-                self.trav_map_layers = mp.Value('i', 0)
-                
-                # Map bounds
-                self.elev_map_xmin = mp.Value('d', 0.0)
-                self.elev_map_xmax = mp.Value('d', 0.0)
-                self.elev_map_ymin = mp.Value('d', 0.0)
-                self.elev_map_ymax = mp.Value('d', 0.0)
-                
-                # Robot state (updated frequently)
-                self.robot_x = mp.Value('d', 0.0)
-                self.robot_y = mp.Value('d', 0.0)
-                self.robot_heading = mp.Value('d', 0.0)
-                
-                # Locks
-                self.write_lock = mp.Lock()  # Exclusive: Only ONE writer at a time
-                self.read_lock = mp.RLock()  # Shared: Multiple readers can acquire simultaneously
-                
+                if mode == 'writer':
+                    try:
+                        self._shm = shared_memory.SharedMemory(
+                            create=True, size=_META_DTYPE.itemsize, name=_META_SHM_NAME
+                        )
+                    except FileExistsError:
+                        stale = shared_memory.SharedMemory(name=_META_SHM_NAME)
+                        stale.close()
+                        stale.unlink()
+                        self._shm = shared_memory.SharedMemory(
+                            create=True, size=_META_DTYPE.itemsize, name=_META_SHM_NAME
+                        )
+                    self._arr = np.ndarray(1, dtype=_META_DTYPE, buffer=self._shm.buf)
+                    self._arr[:] = np.zeros(1, dtype=_META_DTYPE)  # zero-initialise
+                else:
+                    # Reader: wait for writer to create the block
+                    start = time.time()
+                    while True:
+                        try:
+                            self._shm = shared_memory.SharedMemory(name=_META_SHM_NAME)
+                            break
+                        except FileNotFoundError:
+                            if time.time() - start > 10.0:
+                                raise RuntimeError(
+                                    "Timeout waiting for metadata shared memory"
+                                )
+                            time.sleep(0.05)
+                    self._arr = np.ndarray(1, dtype=_META_DTYPE, buffer=self._shm.buf)
+
+                # No cross-process locks — lock calls are no-ops
+                self.write_lock = _NoLock()
+                self.read_lock  = _NoLock()
+
+            # --- scalar properties (read/write directly into shared memory) ---
+
+            @property
+            def version(self): return int(self._arr[0]['version'])
+            @version.setter
+            def version(self, v): self._arr[0]['version'] = v
+
+            @property
+            def is_trav_map_built(self): return bool(self._arr[0]['is_trav_map_built'])
+            @is_trav_map_built.setter
+            def is_trav_map_built(self, v): self._arr[0]['is_trav_map_built'] = v
+
+            @property
+            def is_elev_map_built(self): return bool(self._arr[0]['is_elev_map_built'])
+            @is_elev_map_built.setter
+            def is_elev_map_built(self, v): self._arr[0]['is_elev_map_built'] = v
+
+            @property
+            def map_resolution(self): return float(self._arr[0]['map_resolution'])
+            @map_resolution.setter
+            def map_resolution(self, v): self._arr[0]['map_resolution'] = v
+
+            @property
+            def elev_map_rows(self): return int(self._arr[0]['elev_map_rows'])
+            @elev_map_rows.setter
+            def elev_map_rows(self, v): self._arr[0]['elev_map_rows'] = v
+
+            @property
+            def elev_map_cols(self): return int(self._arr[0]['elev_map_cols'])
+            @elev_map_cols.setter
+            def elev_map_cols(self, v): self._arr[0]['elev_map_cols'] = v
+
+            @property
+            def trav_map_rows(self): return int(self._arr[0]['trav_map_rows'])
+            @trav_map_rows.setter
+            def trav_map_rows(self, v): self._arr[0]['trav_map_rows'] = v
+
+            @property
+            def trav_map_cols(self): return int(self._arr[0]['trav_map_cols'])
+            @trav_map_cols.setter
+            def trav_map_cols(self, v): self._arr[0]['trav_map_cols'] = v
+
+            @property
+            def trav_map_layers(self): return int(self._arr[0]['trav_map_layers'])
+            @trav_map_layers.setter
+            def trav_map_layers(self, v): self._arr[0]['trav_map_layers'] = v
+
+            @property
+            def elev_map_xmin(self): return float(self._arr[0]['elev_map_xmin'])
+            @elev_map_xmin.setter
+            def elev_map_xmin(self, v): self._arr[0]['elev_map_xmin'] = v
+
+            @property
+            def elev_map_xmax(self): return float(self._arr[0]['elev_map_xmax'])
+            @elev_map_xmax.setter
+            def elev_map_xmax(self, v): self._arr[0]['elev_map_xmax'] = v
+
+            @property
+            def elev_map_ymin(self): return float(self._arr[0]['elev_map_ymin'])
+            @elev_map_ymin.setter
+            def elev_map_ymin(self, v): self._arr[0]['elev_map_ymin'] = v
+
+            @property
+            def elev_map_ymax(self): return float(self._arr[0]['elev_map_ymax'])
+            @elev_map_ymax.setter
+            def elev_map_ymax(self, v): self._arr[0]['elev_map_ymax'] = v
+
         return SharedMetadata()
     
     def initialize_arrays(self,
@@ -131,16 +228,16 @@ class SharedMemoryBackend:
             raise RuntimeError("Backend already initialized")
         
         # Store metadata
-        self.metadata.map_resolution.value = map_resolution
-        self.metadata.elev_map_rows.value = elev_map_rows
-        self.metadata.elev_map_cols.value = elev_map_cols
-        self.metadata.trav_map_rows.value = trav_map_rows
-        self.metadata.trav_map_cols.value = trav_map_cols
-        self.metadata.trav_map_layers.value = trav_map_layers
-        self.metadata.elev_map_xmin.value = elev_map_xmin
-        self.metadata.elev_map_xmax.value = elev_map_xmax
-        self.metadata.elev_map_ymin.value = elev_map_ymin
-        self.metadata.elev_map_ymax.value = elev_map_ymax
+        self.metadata.map_resolution  = map_resolution
+        self.metadata.elev_map_rows   = elev_map_rows
+        self.metadata.elev_map_cols   = elev_map_cols
+        self.metadata.trav_map_rows   = trav_map_rows
+        self.metadata.trav_map_cols   = trav_map_cols
+        self.metadata.trav_map_layers = trav_map_layers
+        self.metadata.elev_map_xmin   = elev_map_xmin
+        self.metadata.elev_map_xmax   = elev_map_xmax
+        self.metadata.elev_map_ymin   = elev_map_ymin
+        self.metadata.elev_map_ymax   = elev_map_ymax
         
         # Calculate sizes
         elev_map_size = elev_map_rows * elev_map_cols * np.dtype(np.float32).itemsize
@@ -196,7 +293,8 @@ class SharedMemoryBackend:
     
     def _cleanup_stale_memory(self):
         """Clean up stale shared memory from previous crash"""
-        stale_names = ['trav_map_shm', 'elev_map_shm', 'elev_meta_shm', 'trav_meta_shm']
+        stale_names = ['trav_map_shm', 'elev_map_shm', 'elev_meta_shm', 'trav_meta_shm',
+                       _META_SHM_NAME]
         for name in stale_names:
             try:
                 stale_shm = shared_memory.SharedMemory(name=name)
@@ -331,12 +429,12 @@ class SharedMemoryBackend:
     
     def increment_version(self):
         """Increment version number (call after map updates)"""
-        with self.metadata.version.get_lock():
-            self.metadata.version.value += 1
-    
+        with self.metadata.write_lock:
+            self.metadata.version += 1
+
     def get_version(self) -> int:
         """Get current version number"""
-        return self.metadata.version.value
+        return self.metadata.version
     
     # ========================================================================
     # Public API: Metadata Access
@@ -344,54 +442,41 @@ class SharedMemoryBackend:
     
     def set_trav_map_built(self, value: bool):
         """Set traversability map built flag"""
-        with self.metadata.is_trav_map_built.get_lock():
-            self.metadata.is_trav_map_built.value = value
-    
+        with self.metadata.write_lock:
+            self.metadata.is_trav_map_built = value
+
     def set_elev_map_built(self, value: bool):
         """Set elevation map built flag"""
-        with self.metadata.is_elev_map_built.get_lock():
-            self.metadata.is_elev_map_built.value = value
-    
+        with self.metadata.write_lock:
+            self.metadata.is_elev_map_built = value
+
     def get_trav_map_built(self) -> bool:
         """Get traversability map built flag"""
-        return self.metadata.is_trav_map_built.value
-    
+        return self.metadata.is_trav_map_built
+
     def get_elev_map_built(self) -> bool:
         """Get elevation map built flag"""
-        return self.metadata.is_elev_map_built.value
-    
+        return self.metadata.is_elev_map_built
+
     def get_map_resolution(self) -> float:
         """Get map resolution"""
-        return self.metadata.map_resolution.value
-    
+        return self.metadata.map_resolution
+
     def get_map_bounds(self) -> Tuple[float, float, float, float]:
         """Get map bounds (xmin, xmax, ymin, ymax)"""
-        return (self.metadata.elev_map_xmin.value,
-                self.metadata.elev_map_xmax.value,
-                self.metadata.elev_map_ymin.value,
-                self.metadata.elev_map_ymax.value)
-    
-    def set_robot_pose(self, x: float, y: float, heading: float):
-        """Update robot pose (stored in shared memory)"""
-        with self.metadata.robot_x.get_lock():
-            self.metadata.robot_x.value = x
-            self.metadata.robot_y.value = y
-            self.metadata.robot_heading.value = heading
-    
-    def get_robot_pose(self) -> Tuple[float, float, float]:
-        """Get robot pose (from shared memory)"""
-        return (self.metadata.robot_x.value,
-                self.metadata.robot_y.value,
-                self.metadata.robot_heading.value)
-    
+        return (self.metadata.elev_map_xmin,
+                self.metadata.elev_map_xmax,
+                self.metadata.elev_map_ymin,
+                self.metadata.elev_map_ymax)
+
     def get_map_dimensions(self) -> Dict:
         """Get map dimensions"""
         return {
-            'elev_map_rows': self.metadata.elev_map_rows.value,
-            'elev_map_cols': self.metadata.elev_map_cols.value,
-            'trav_map_rows': self.metadata.trav_map_rows.value,
-            'trav_map_cols': self.metadata.trav_map_cols.value,
-            'trav_map_layers': self.metadata.trav_map_layers.value
+            'elev_map_rows':   self.metadata.elev_map_rows,
+            'elev_map_cols':   self.metadata.elev_map_cols,
+            'trav_map_rows':   self.metadata.trav_map_rows,
+            'trav_map_cols':   self.metadata.trav_map_cols,
+            'trav_map_layers': self.metadata.trav_map_layers,
         }
     
     # ========================================================================
@@ -426,9 +511,21 @@ class SharedMemoryBackend:
                 try:
                     shm.close()
                     if self.mode == 'writer':
-                        shm.unlink()  # Only writer unlinks (removes from system)
+                        shm.unlink()
+                        resource_tracker.unregister(f'/{shm.name}', 'shared_memory')
                 except Exception:
                     pass  # Ignore errors during cleanup
+
+        # Clean up metadata shared memory block
+        if hasattr(self.metadata, '_shm'):
+            try:
+                self.metadata._shm.close()
+                if self.mode == 'writer':
+                    self.metadata._shm.unlink()
+                    resource_tracker.unregister(f'/{self.metadata._shm.name}', 'shared_memory')
+            except Exception:
+                pass
+
         if self.mode == 'writer':
             print("Shared memory backend cleaned up (writer)")
 
@@ -451,9 +548,6 @@ class LocalMemoryBackend:
             'is_trav_map_built': False,
             'is_elev_map_built': False,
             'map_resolution': 0.0,
-            'robot_x': 0.0,
-            'robot_y': 0.0,
-            'robot_heading': 0.0
         }
         self._initialized = False
     
@@ -532,16 +626,6 @@ class LocalMemoryBackend:
                 self.metadata['elev_map_xmax'],
                 self.metadata['elev_map_ymin'],
                 self.metadata['elev_map_ymax'])
-    
-    def set_robot_pose(self, x: float, y: float, heading: float):
-        self.metadata['robot_x'] = x
-        self.metadata['robot_y'] = y
-        self.metadata['robot_heading'] = heading
-    
-    def get_robot_pose(self) -> Tuple[float, float, float]:
-        return (self.metadata['robot_x'],
-                self.metadata['robot_y'],
-                self.metadata['robot_heading'])
     
     def cleanup(self):
         pass  # No cleanup needed for local memory

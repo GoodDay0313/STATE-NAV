@@ -1,8 +1,7 @@
 #!/bin/bash
-IMAGE_NAME="twoleggedcoffeedrinker/state_nav:LaMa"
+IMAGE_NAME="biped_nav_sim"
 HOST_HOME_DIR=$HOME
 # HOST_HOME_DIR=/home/lidar # Change this to your home directory
-catkin_ws="$HOST_HOME_DIR/Desktop/Ziwon_Project/ros1_ws" # Change this to your catkin workspace directory
 
 # Define environment variables for enabling graphical output for the container.
 XSOCK=/tmp/.X11-unix
@@ -50,7 +49,6 @@ RUN_COMMAND="docker run \
   --entrypoint /bin/bash \
   -eHOST_USERNAME=$(whoami) \
   --env HOST_HOME_DIR=$HOST_HOME_DIR \
-  --env catkin_ws=$catkin_ws \
   --env NVIDIA_DRIVER_CAPABILITIES=all \
   --env NVIDIA_VISIBLE_DEVICES=all \
   --env LD_LIBRARY_PATH=/usr/local/zed/lib:\$LD_LIBRARY_PATH \

@@ -45,7 +45,8 @@ def _load_requirements(
     return reqs
 
 
-readme = open("README.md").read()
+readme_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "README.md")
+readme = open(readme_path).read() if os.path.exists(readme_path) else ""
 version = find_version("statenav_global", "__init__.py")
 
 install_requires = _load_requirements(os.path.dirname(os.path.realpath(__file__)))
@@ -60,21 +61,30 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/zyoon6/TBA",
     packages=find_packages(exclude=["test", "test.*"]),
+    package_data={
+        "statenav_global": ["configs/*.yaml"],
+    },
     data_files=[
         ('share/ament_index/resource_index/packages',
             ['resource/' + 'statenav_global']),
         ('share/statenav_global', ['package.xml']),
     ],
+    entry_points={
+        'console_scripts': [
+            'traversability_estimation = executables.main_worldmodel:main',
+            'global_planning = executables.main_global_planning:main',
+            'main_multiprocess = executables.main_multiprocess:main',
+        ],
+    },
     python_requires=">=3.8",
     install_requires=install_requires,
     extras_require={
         "dev": ["isort", "black", "pyright"],
         "test": ["pytest"],
     },
-    test_suite="test",
+    license="MIT",
     zip_safe=True,
     classifiers=[
-        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
     ],
 )

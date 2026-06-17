@@ -1,33 +1,34 @@
 #!/usr/bin/env python3
-from time import time
 import numpy as np
 import math
 from omegaconf import OmegaConf
 
-from statenav_global.planners import GlobalRRTStar
-from statenav_global.mapping import CMDbasedMap, LearnedInSMap
-from statenav_global.mapping.globalmap_with_backend import CMDbasedMapReaderProxy
-from statenav_global.mapping.shared_memory_backend import SharedMemoryBackend
-from statenav_global.mapping.ros_utils import populate_map_from_float32multiarray, populate_map_from_gridmap
+import statenav_global
+from statenav_global import CMDbasedMap
+from statenav_global.world_model.globalmap_with_backend import CMDbasedMapReaderProxy
+from statenav_global.world_model.shared_memory_backend import SharedMemoryBackend
+from statenav_global.utility.ros_utils import populate_map_from_float32multiarray, populate_map_from_gridmap
 
-import transforms3d as tf3
 # Note: tf2_ros imports available if needed for future TF operations
 # from tf2_ros import TransformListener, Buffer, TransformException
 # import tf2_geometry_msgs
 
 import rclpy
+import rclpy.parameter
 from rclpy.node import Node
+from rclpy.clock import ClockType
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float32MultiArray, Bool
 from grid_map_msgs.msg import GridMap
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 
+import threading
 import warnings
 warnings.simplefilter(action='ignore', category=RuntimeWarning)
 
 from pathlib import Path as PathLib
-cfg = OmegaConf.load(PathLib(__file__).parents[0] / "configs/planning_config.yaml")
+cfg = OmegaConf.load(PathLib(statenav_global.__file__).parent / "configs/planning_config.yaml")
 
 
 def set_random_seed(seed):
@@ -102,23 +103,30 @@ def wrap_to_pi(angle):
 class PlanningNode(Node):
     """Main planning node that subscribes to map and publishes paths."""
 
-    def __init__(self, shared_metadata=None):
+    def __init__(self, use_sim_time: bool = False):
         """
-        Initialize PlanningNode
-
-        Args:
-            shared_metadata: Optional SharedMetadata object from parent process.
-                           If provided, uses shared memory with parent-spawning approach.
-                           If None, uses config to determine mode (named shared memory or ROS messages).
+        Initializescore_travcmd PlanningNode
         """
-        super().__init__('planning_node')
+        super().__init__(
+            'planning_node',
+            parameter_overrides=[
+                rclpy.parameter.Parameter('use_sim_time', rclpy.parameter.Parameter.Type.BOOL, use_sim_time)
+            ]
+        )
+        clock_type = self.get_clock().clock_type
+        if clock_type != ClockType.ROS_TIME:
+            self.get_logger().warning(
+                f"[PathPlanner] use_sim_time is OFF (clock={clock_type.name}). "
+                "Pass --ros-args -p use_sim_time:=true to use /clock."
+            )
+        else:
+            self.get_logger().info("[PathPlanner] Using ROS time from /clock")
 
         # Load configuration
         self.cfg = cfg
-        
+
         # Check if using shared memory mode
-        self.use_shared_memory = self.cfg.get('use_shared_memory', False) or (shared_metadata is not None)
-        self.shared_metadata = shared_metadata  # Store for parent-spawning approach
+        self.use_shared_memory = self.cfg.get('use_shared_memory', False)
         
         # Calculate task extent
         self.task_extent = [
@@ -134,33 +142,38 @@ class PlanningNode(Node):
         
         global_goal = self.cfg.global_goal
         
+
+
+
+
+
+
+
+
+
+
         # Initialize map based on mode
         if self.use_shared_memory:
             # Shared memory mode: attach to shared memory created by WorldModel
-            if shared_metadata is not None:
-                self.get_logger().info("[PathPlanner] Initializing in SHARED MEMORY mode (reader, parent-spawning)")
-                backend = SharedMemoryBackend(mode='reader', shared_metadata=shared_metadata)
-            else:
-                self.get_logger().info("[PathPlanner] Initializing in SHARED MEMORY mode (reader, named)")
-                backend = SharedMemoryBackend(mode='reader')
+            self.get_logger().info("[PathPlanner] Initializing in SHARED MEMORY mode (reader, named)")
+            backend = SharedMemoryBackend(mode='reader')
             
             # Note: CMDbasedMapReaderProxy only supports CMDbasedMap for now
             # If you need other map types, you'll need to create reader proxies for them
-            if self.cfg.trav_option == "Proposed" and self.cfg.planner_option == "safecmd":
+            if self.cfg.trav_option == "Proposed":
                 self.global_map = CMDbasedMapReaderProxy(backend)
                 # Set goal after initialization
                 self.global_map.goal_x = global_goal[0]
                 self.global_map.goal_y = global_goal[1]
             else:
-                self.get_logger().warning(f"[PathPlanner] Shared memory mode currently only supports CMDbasedMap with safecmd option.")
-                self.get_logger().warning(f"[PathPlanner] Requested: {self.cfg.trav_option}/{self.cfg.planner_option}. Falling back to ROS message mode.")
+                self.get_logger().warning(f"[PathPlanner] Shared memory mode currently only supports CMDbasedMap (trav_option: Proposed).")
+                self.get_logger().warning(f"[PathPlanner] Requested: {self.cfg.trav_option}. Falling back to ROS message mode.")
                 self.use_shared_memory = False
-                self.shared_metadata = None
         
         if not self.use_shared_memory:
             # ROS message mode: create map and subscribe to topics
             self.get_logger().info("[PathPlanner] Initializing in ROS MESSAGE mode")
-            if self.cfg.trav_option == "Proposed" and self.cfg.planner_option == "safecmd":
+            if self.cfg.trav_option == "Proposed":
                 self.global_map = CMDbasedMap(
                     env_xmin=self.cfg.env_extent[0], 
                     env_xmax=self.cfg.env_extent[1], 
@@ -171,26 +184,25 @@ class PlanningNode(Node):
                     which_layer=self.cfg.which_layer,
                     preest_update_resolution=self.cfg.trav_estimation_resoultion, 
                     instab_limit=self.cfg.instability_limit,
-                    load_Travformer = False
-                )
-            elif self.cfg.trav_option == "Proposed" and self.cfg.planner_option == "score":
-                self.global_map = LearnedInSMap(
-                    env_xmin=self.cfg.env_extent[0], 
-                    env_xmax=self.cfg.env_extent[1], 
-                    env_ymin=self.cfg.env_extent[2], 
-                    env_ymax=self.cfg.env_extent[3],
-                    goal_x=global_goal[0], 
-                    goal_y=global_goal[1],
-                    which_layer=self.cfg.which_layer,
-                    preest_update_resolution=self.cfg.trav_estimation_resoultion, 
-                    instab_limit=self.cfg.instability_limit,
-                    load_Travformer = False
-                )
+                    load_Travformer = False)
             else:
-                raise ValueError(f"Invalid trav_option or planner_option: {self.cfg.trav_option} or {self.cfg.planner_option}")
+                raise ValueError(f"Invalid trav_option: {self.cfg.trav_option}")
         
         self.get_logger().info(f"[PathPlanner] Map class initialized. Type: {type(self.global_map).__name__}, Mode: {'SHARED MEMORY' if self.use_shared_memory else 'ROS MESSAGE'}")
         
+
+
+
+
+
+
+
+
+
+
+
+
+
         # Initialize RRT planner
         self.initial_start = self.cfg.initial_start
         self.global_goal = self.cfg.global_goal
@@ -202,7 +214,7 @@ class PlanningNode(Node):
         branch_length_max = self.cfg.branch_length_max_ratio * diagonal
         search_radius = self.cfg.search_radius_ratio * diagonal
         
-        self.global_planner = GlobalRRTStar(
+        self.global_planner = statenav_global.planners.GlobalRRTStar(
             self.task_extent, self.rng, self.initial_start, self.global_goal, self.heading_start,
             goal_radius=diagonal * self.cfg.goal_radius_ratio,
             branch_length_max=branch_length_max,
@@ -213,7 +225,7 @@ class PlanningNode(Node):
             switch_to_informed_from_thisiter=self.cfg.switch_to_informed_from_thisiter,
             sampling_dist=self.cfg.sampling_dist,
             num_samplingpoints=self.cfg.num_samplingpoints,
-            default_obstacle_clearance=self.cfg.obs_clearance
+            default_obstacle_clearance=self.cfg.obs_clearance,
         )
         self.global_planner.global_map = self.global_map
 
@@ -248,13 +260,28 @@ class PlanningNode(Node):
 
         print(self.global_map.robot_heading)
 
+
+
+
         # Publishers
         self.global_path_pub = self.create_publisher(Path, "/global_path", qos_profile)
-        self.get_logger().info("[PathPlanner] Publisher initialized: /global_path")
+        self.get_logger().info("[PathPlanner] Publishers initialized: /global_path")
+
+
+
+
+
+
+
+
+
+
+
+
+
         
         # For getting next waypoint for resetting the tree
-        self.step_T = self.cfg.step_T
-        self.RRT_getwaypoint_steps = self.cfg.RRT_getwaypoint_steps
+        self.waypoint_lookahead_time = self.cfg.waypoint_lookahead_time
         
         # State
         self.last_plan_time = 0
@@ -262,8 +289,13 @@ class PlanningNode(Node):
         self.initialization_time = self.cfg.initialization_time
         self.replanning_needed = True  # For shared memory mode
         # TODO: Handle replanning needed later
-        
-        self.get_logger().info(f"[PathPlanner] Planning Node initialized with {self.cfg.trav_option}/{self.cfg.planner_option} map type!")
+
+        # Handling map visualization
+        self.debugging_visualization = self.cfg.get('debugging_visualization', False)
+        self.map_visualization_interval = self.cfg.get('map_visualization_interval', 1.0)
+        self._last_map_visualization_time = 0.0
+
+        self.get_logger().info(f"[PathPlanner] Planning Node initialized with {self.cfg.trav_option} map type!")
     
 
 
@@ -275,33 +307,28 @@ class PlanningNode(Node):
         if not self.global_map.is_TraversabilityMap_built:
             self.get_logger().warning("[PathPlanner] Map not built yet, cannot plan")
             return
-        
+
         self.planning_in_progress = True
-        self.get_logger().info("[PathPlanner] Planning in progress")
-        
+
         try:
-            if self.use_shared_memory:
-                # Update robot pose from shared memory before planning
-                self.global_map.update_robot_pose()
-                # Use planning() method for shared memory mode
-                self.global_planner.replan(
-                    initial_start=(self.initial_start[0], self.initial_start[1]), 
-                    step_T=self.step_T, 
-                    RRT_getwaypoint_steps=self.RRT_getwaypoint_steps, 
-                    plot_map=True
-                )
-            else:
-                # Use replan() method for ROS message mode
-                self.global_planner.replan(
-                    initial_start=(self.initial_start[0], self.initial_start[1]), 
-                    step_T=self.step_T, 
-                    RRT_getwaypoint_steps=self.RRT_getwaypoint_steps, 
-                    plot_map=False
-                )
-            # TODO: Weird
-            
-            # Publish path
+            ros_t = self.get_clock().now().nanoseconds / 1e9
+            rx, ry, rh = self.global_map.robot_x, self.global_map.robot_y, self.global_map.robot_heading
+            self.get_logger().info("=" * 72)
+            self.get_logger().info(
+                f"[PathPlanner] Replanning | t={ros_t:.2f}s | "
+                f"robot=({rx:.2f}, {ry:.2f}, {np.rad2deg(rh):.1f}deg)"
+            )
+
+            self.global_planner.replan(
+                initial_start=(self.initial_start[0], self.initial_start[1]),
+                total_lookahead_time=self.waypoint_lookahead_time,
+                plot_map = self.debugging_visualization,
+            )
+
             self.publish_path()
+            
+            # NOTE: Uncomment this to visualize other traversability maps
+            self._visualize_planning_maps(ros_t)
 
             self.last_plan_time = self.get_clock().now().nanoseconds / 1e9
 
@@ -316,6 +343,32 @@ class PlanningNode(Node):
 
 
 ####################################### PUBLISHING #######################################
+
+    @staticmethod
+    def _path_to_xy_list(path):
+        """Convert planner path (Node objects or xy tuples) to [[x, y], ...]."""
+        xy_path = []
+        for pt in path:
+            if hasattr(pt, 'x') and hasattr(pt, 'y'):
+                xy_path.append([pt.x, pt.y])
+            else:
+                xy_path.append([float(pt[0]), float(pt[1])])
+        return xy_path
+
+    def _visualize_planning_maps(self, current_time):
+        """Show elevation + traversability (cmd) maps with the planned path overlay."""
+        if not self.debugging_visualization:
+            return
+        if current_time - self._last_map_visualization_time < self.map_visualization_interval:
+            return
+        if len(self.global_planner.path) == 0:
+            return
+        if not hasattr(self.global_map, 'visualize_maps'):
+            return
+
+        self._last_map_visualization_time = current_time
+        path_xy = self._path_to_xy_list(self.global_planner.path)
+        self.global_map.visualize_maps(self.global_map.robot_heading, path_xy)
 
     def publish_path(self):
         """Publish the planned path as a ROS Path message."""
@@ -340,19 +393,23 @@ class PlanningNode(Node):
                 pose.pose.position.y = pt.y
             else:
                 # Tuple/list format (from ROS message mode)
-                pose.pose.position.x = pt[0]
-                pose.pose.position.y = pt[1]
+                pose.pose.position.x = float(pt[0])
+                pose.pose.position.y = float(pt[1])
             
-            pose.pose.position.z = 1.0
+            # Get elevation z for this waypoint from the elevation map; fallback to 1.0
+            z = 1.0
+            if self.global_map.is_ElevationMap_built and self.global_map.ElevationMap is not None:
+                row, col = self.global_map.xy2grid(pose.pose.position.x, pose.pose.position.y)
+                if row is not None and col is not None:
+                    elev = self.global_map.ElevationMap[row, col]
+                    if not np.isnan(elev):
+                        z = float(elev)
+            pose.pose.position.z = z
             pose.pose.orientation.w = 1.0
             global_path_msg.poses.append(pose)
         
         self.global_path_pub.publish(global_path_msg)
         # self.get_logger().info("Published path with %d waypoints", len(self.global_planner.path))
-    
-
-
-
 
 
 
@@ -368,25 +425,15 @@ class PlanningNode(Node):
             1 - 2 * (q.y * q.y + q.z * q.z)
         )
         
-        if self.use_shared_memory:
-            # Update pose in shared memory (via backend)
-            self.global_map.backend.set_robot_pose(p.x, p.y, wrap_to_pi(yaw))
-            # Also update local copy
-            self.global_map.update_robot_pose()
-        else:
-            # Update local pose (ROS message mode)
-            self.global_map.robot_x = p.x
-            self.global_map.robot_y = p.y
-            self.global_map.robot_heading = wrap_to_pi(yaw)
+        self.global_map.robot_x = p.x
+        self.global_map.robot_y = p.y
+        self.global_map.robot_heading = wrap_to_pi(yaw)
     
     def replanning_callback(self, msg):
         """Callback for replanning signal via ROS topic"""
         if msg.data:
             self.replanning_needed = True
-            self.get_logger().info("[PathPlanner] Replanning requested via ROS topic")
 
-
-    
     def map_callback(self, msg):
         """Handle incoming map message and trigger planning (ROS message mode only)."""
         if self.use_shared_memory:
@@ -429,18 +476,18 @@ class PlanningNode(Node):
 ####################################### RUN #######################################
 
     def run(self):
+        # Spin in a background thread so ROS callbacks are always processed
+        spin_thread = threading.Thread(target=rclpy.spin, args=(self,), daemon=True)
+        spin_thread.start()
+
         if self.use_shared_memory:
             self.get_logger().info("[PathPlanner] Planning Node started (shared memory mode). Waiting for maps and replanning signals...")
-            planning_rate = self.create_rate(10)  # 10 Hz for shared memory mode
+            planning_rate = self.create_rate(1)  # 1 Hz
 
-            # Initialize throttle timer for logging
             self._last_wait_log_time = 0.0
 
             while rclpy.ok():
-                # Update map flags from shared memory (for reader mode)
-                if hasattr(self.global_map, 'update_map_flags'):
-                    self.global_map.update_map_flags()
-                # Check if maps are ready
+
                 if not self.global_map.is_TraversabilityMap_built:
                     current_time = self.get_clock().now().nanoseconds / 1e9
                     if current_time - self._last_wait_log_time > 5.0:
@@ -449,8 +496,6 @@ class PlanningNode(Node):
                     planning_rate.sleep()
                     continue
 
-                # Check for replanning requests via ROS topic
-                # replanning_needed is set by replanning_callback when /replanning_signal is received
                 if self.replanning_needed and not self.planning_in_progress:
                     self.plan_and_publish()
                     self.replanning_needed = False
@@ -458,19 +503,14 @@ class PlanningNode(Node):
                 planning_rate.sleep()
         else:
             self.get_logger().info("[PathPlanner] Planning Node started (ROS message mode). Waiting for map updates...")
-            # In ROS2, we typically use rclpy.spin() instead of a manual rate loop
-            # plan_and_publish is called in map_callback for ROS message mode
+            # plan_and_publish is called in map_callback; just keep alive until shutdown
+            spin_thread.join()
 
 def main():
     rclpy.init()
     try:
-        node = PlanningNode()
-        if node.use_shared_memory:
-            # For shared memory mode, run custom loop
-            node.run()
-        else:
-            # For ROS message mode, use rclpy.spin()
-            rclpy.spin(node)
+        node = PlanningNode(use_sim_time=True)
+        node.run()
     except KeyboardInterrupt:
         pass
     finally:
