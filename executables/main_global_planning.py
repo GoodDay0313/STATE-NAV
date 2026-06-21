@@ -322,7 +322,7 @@ class PlanningNode(Node):
             self.global_planner.replan(
                 initial_start=(self.initial_start[0], self.initial_start[1]),
                 total_lookahead_time=self.waypoint_lookahead_time,
-                plot_map = self.debugging_visualization,
+                plot_map = False,
             )
 
             self.publish_path()

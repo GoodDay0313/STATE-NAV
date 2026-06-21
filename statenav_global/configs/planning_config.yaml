@@ -47,8 +47,8 @@ local_patch_size: 0.64  # m
 
 # ROS-related
 frame_id: 'map' # World frame id
-which_layer: ['min_filter', 'inpaint']
-# which_layer: ['smooth']
+#which_layer: ['min_filter', 'inpaint']
+which_layer: ['neural_inpaint']
 mean_over_maps: True # If false, the first layer is used for data and the second layer is used for deciding if it is NaN
 
 elevation_diff_threshold: 0.03
@@ -73,8 +73,8 @@ toorisky_w: 0.0000001
 TreatObs_cmd_v: 0.3
 num_commands: 10
 
-instability_limit: 1.25
-instability_std_multiplier: 2.06
+instability_limit: 1.5
+instability_std_multiplier: 2.1
 
 ####################### Hardware Configurations #######################
 # Perception

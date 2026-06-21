@@ -1,38 +1,59 @@
-# STATE-NAV: Stability-Aware
+# STATE-NAV: Stability-Aware Traversability Estimation for Bipedal Navigation on Rough Terrain
+
+## Update News!
+Now ROS2 version available! Still stabilizing though. Currently preparing Docker environment.
+Now both versions (ROS1/ROS2) are available for multiprocessing with shared memory.
 
 ## Overview
+![example image](./images/running_example.png)
 
-Teaser image
+**STATE-NAV** is the first learning-based traversability estimation and navigation framework for humanoids on diverse rough terrain. It learns a stability-aware velocity-based traversability representation of terrain by carefully selecting a self-supervised locomotion signal for bipedal locomotion and integrates this knowledge into a hierarchical planning framework for safe and efficient navigation.
 
-**STATE-NAV** is a learning-based traversability estimation and risk-sensitive velocity-based navigation framework for bipedal robots operating in diverse and uneven environments. It learns a stability-aware representation of terrain by carefully selecting a self-supervised locomotion signal and integrates this knowledge into a hierarchical planning framework for safe and efficient navigation.
+![Teaser image](./images/teaser.png)
+
+### Practical sub-module use cases
+- **Get TravRRT for Terrain Navigation**: A computationally efficient RRT* for terrain navigation with traversability. Theoretically, RRT* assumes Lipschitz-continuous costs, which break on rough terrain where traversability changes abruptly, and forcing large rewiring radius. TravRRT* avoids this by biased sampling toward high-traversability regions—much like how humans just ignore infeasible paths (you don’t even think about walking through a bush, do you?). (Why not A*? yaw angle makes the search 3D! High computation. And also, heuristics for computing h(x).)
+  
+- **Get Bipedal Traversability for Humanoids**: An off-the-shelf bipedal traversability map—insert an elevation map, receive a traversability map.
+
 
 ### Why STATE-NAV?
 
-- **Avoids brittle terrain heuristics**: No reliance on hand-tuned cost functions that break in new environments
-- **Robot-specific and environment-agnostic**: Provides a generalizable way to measure traversability tailored to bipedal locomotion
-- **Safe learning-planning integration**: Offers a clean abstraction that integrates learning and planning without sacrificing safety
-- **Modular and extensible**: Allows researchers to plug in other instability metrics, controllers, or planners
+- **Carefully selected self-supervising signal for bipedal locomotion**: The first learning-based traversability estimation framework for bipedal locomotion. Uses Body-to-Stance-Foot Angle (BFSA), which has high correlation with bipedal fallover, as a traversability label for self-supervision. Unlike previous approaches that rely on traction or IMU signals (used for quadrupeds but not validated for bipedal instability), BFSA provides a more appropriate signal for bipedal locomotion.
+
+- **Velocity-based traversability: Robot-specific (environment-agnostic) cost formulation**: Represents traversability not as a unitless cost or score, but as velocity with physical meaning. Defines the fastest velocity that a robot can traverse while maintaining instability (a robot-specific parameter) risk-sensitively within acceptable limits. This velocity representation replaces traditional path planning costs of $c_{ij} = \sum_{k \in M} (1 + w(1/t_k))^p \Delta l_k$ which depends on environment-specific hyperparameter $w$ that requires retuning for every environment.
+
+- **Safe learning-planning integration**: Rather than end-to-end learning, leverages the learned model where it can do what models cannot and integrates the learned representation effectively within a hierarchical planning strategy—as a cost term in RRT* path planning and as a constraint in MPC local planning.
+
+- **Modular and extensible**: Provides researchers with traversability maps and path plans for bipedal locomotion trained with Digit. Support for other robots will be added in future releases.
+
 
 ### Key Features
 
 - **Traversability Estimation**: TravFormer, a transformer-based neural network, predicts bipedal instability along with its uncertainty.
 Traversability is defined as a stability-aware command velocity: the fastest command that keeps predicted instability within a user-specified limit.
 The model supports risk-aware planning via Value at Risk (VaR) and operates directly from elevation maps.
+
 - **TravRRT Global Planning**: A global planner that leverages the predicted stability-aware velocity to generate time-efficient and risk-sensitive paths.
 Consistently avoids unsafe terrain without manual weight tuning or environment-specific adjustments.
 
-## Citing
 
+## Citing
 If you use STATE-NAV in your research, please cite:
 
 ```bibtex
-@article{yoon2025state,
-  title={STATE-NAV: Stability-Aware Traversability Estimation for Bipedal Navigation on Rough Terrain},
-  author={Yoon, Ziwon and Zhu, Lawrence Y and Gan, Lu and Zhao, Ye},
-  journal={arXiv preprint arXiv:2506.01046},
-  year={2025}
-}
+@ARTICLE{11316382,
+  author={Yoon, Ziwon and Zhu, Lawrence Y. and Lu, Jingxi and Gan, Lu and Zhao, Ye},
+  journal={IEEE Robotics and Automation Letters}, 
+  title={STATE-NAV: Stability-Aware Traversability Estimation for Bipedal Navigation on Rough Terrain}, 
+  year={2025},
+  volume={},
+  number={},
+  pages={1-8},
+  keywords={Navigation;Planning;Robots;Estimation;Humanoid robots;Uncertainty;Stability criteria;Legged locomotion;Costs;Training;Humanoids;legged robots;traversability;navigation;planning;model predictive control;stability},
+  doi={10.1109/LRA.2025.3648502}}
 ```
+
 
 ## Quick instructions to run
 
@@ -43,19 +64,23 @@ First, create and navigate into your ROS2 workspace source directory. This ensur
 Second, clone the repo.
 
 ```zsh
-# Go to your ROS2 workspace (replace with your actual path)
+# Go to your ROS workspace (replace with your actual path)
 cd $(path_to_your_ros2_workspace)
 
-# Create workspace folder structure
+# Create the workspace folder structure
 mkdir -p statenav_ws/src
 
-# Move into src directory
+# Move into the src directory
 cd statenav_ws/src
 
-# Clone repository into state_nav folder
-git clone
+# Clone STATE-NAV into a folder named state_nav
+git clone https://github.com/yzwfromk/STATE-NAV.git state_nav
 
-# Done: repo is now in statenav_ws/src/state_nav
+# Enter the repository
+cd state_nav
+
+# Ensure you are on the ROS2 branch
+git checkout ROS2
 ```
 
 ### Docker and NVIDIA environment Installation
@@ -161,7 +186,7 @@ ros2 run statenav_global global_planning
 ### Step 4 — Play recorded data
 
 ```bash
-ros2 bag play $(path_to_your_ros2_workspace)/src/state_nav/ROS/1017_2.bag
+ros2 bag play $(path_to_your_ros2_workspace)/statenav_ws/src/state_nav/ROS/bag_isaac
 ```
 
 **What it does:**
@@ -169,14 +194,13 @@ ros2 bag play $(path_to_your_ros2_workspace)/src/state_nav/ROS/1017_2.bag
 ```bash
 # Plays back recorded sensor data (camera pointcloud, elevation map, path plan, etc.) from a rosbag file.
 # It is recording of one of our outdoor experiments.
-# Note: ROS1 bags need to be converted to ROS2 format first using ros1_bridge.
 # Replace $(path_to_your_ros2_workspace) with your actual ROS2 workspace path.
 ```
 
 ### Step 5 — Visualize in RViz
 
 ```bash
-rviz2 -d $(path_to_your_ros2_workspace)/src/state_nav/ROS/rviz_setting.rviz
+rviz2 -d $(path_to_your_ros2_workspace)/statenav_ws/src/state_nav/ROS/rviz_setting.rviz
 ```
 
 **What it does:**
@@ -184,7 +208,6 @@ rviz2 -d $(path_to_your_ros2_workspace)/src/state_nav/ROS/rviz_setting.rviz
 ```bash
 # Launches RViz2 visualization tool with a pre-configured setup to visualize
 # the traversability maps, planned paths, robot pose, and other ROS2 topics.
-# Note: The RViz config file may need to be updated for ROS2 compatibility.
 # Replace $(path_to_your_ros2_workspace) with your actual ROS2 workspace path.
 ```
 
@@ -198,7 +221,6 @@ rviz2 -d $(path_to_your_ros2_workspace)/src/state_nav/ROS/rviz_setting.rviz
 | 3    | `global_planning`           | Path to goal planning     |
 | 4    | `ros2 bag play ...`         | Demo replay               |
 | 5    | `rviz2 -d ...`              | Visualization             |
-
 
 ## Acknowledgments
 

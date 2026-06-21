@@ -699,61 +699,62 @@ class BaseMap:
 
 
         # ####################################### Elevation map #######################################
+        '''
+        This is the original code for visualizing the elevation map.
+        We don't need to visualize the elevation map in the globalmap.py file.
+
+        If you want to visualize the elevation map, you can uncomment the code below.
+        '''
         # Only visualize elevation map if it exists
-        if self.ElevationMap is not None:
-            global savefigureonce_elevmap
-            if not hasattr(self, '_fig1') or not plt.fignum_exists(1):
-                self._fig1 = plt.figure(1)
-                manager = self._fig1.canvas.manager
-                manager.window.setGeometry(0, 0, 480, 420)  # Adjust the position and size as needed
-            else:
-                self._fig1.clf()
-            plt.figure(1)
-            plt.rcParams.update(RC_PARAMS)
-            plt.imshow(self.ElevationMap[:,:], cmap='viridis')
-            plt.title("Global Elevation Map", fontproperties=times_new_roman, fontsize=FS_TITLE)
-            if path_plan is not None and path_plan.shape[0] > 0:
-                plt.plot([x[1] for x in path_plan_InGridMap], [x[0] for x in path_plan_InGridMap], "Dr", markersize=3) 
-                plt.plot([x[1] for x in path_plan_InGridMap], [x[0] for x in path_plan_InGridMap], '-r', linewidth=1.5)
-                plt.plot(path_plan_InGridMap[0,1], path_plan_InGridMap[0,0], marker="D",color=(0,1,1), markersize=6)
-                plt.plot(path_plan_InGridMap[-1,1], path_plan_InGridMap[-1,0], marker="*",color=(1,1,0), markersize=10)
+        # if self.ElevationMap is not None:
+        #     global savefigureonce_elevmap
+        #     if not hasattr(self, '_fig1') or not plt.fignum_exists(1):
+        #         self._fig1 = plt.figure(1)
+        #         manager = self._fig1.canvas.manager
+        #         manager.window.setGeometry(0, 0, 480, 420)  # Adjust the position and size as needed
+        #     else:
+        #         self._fig1.clf()
+        #     plt.figure(1)
+        #     plt.rcParams.update(RC_PARAMS)
+        #     plt.imshow(self.ElevationMap[:,:], cmap='viridis')
+        #     plt.title("Global Elevation Map", fontproperties=times_new_roman, fontsize=FS_TITLE)
+        #     if path_plan is not None and path_plan.shape[0] > 0:
+        #         plt.plot([x[1] for x in path_plan_InGridMap], [x[0] for x in path_plan_InGridMap], "Dr", markersize=3) 
+        #         plt.plot([x[1] for x in path_plan_InGridMap], [x[0] for x in path_plan_InGridMap], '-r', linewidth=1.5)
+        #         plt.plot(path_plan_InGridMap[0,1], path_plan_InGridMap[0,0], marker="D",color=(0,1,1), markersize=6)
+        #         plt.plot(path_plan_InGridMap[-1,1], path_plan_InGridMap[-1,0], marker="*",color=(1,1,0), markersize=10)
             
-            cbar = plt.colorbar()
-            cbar.set_label('Height (m)', fontsize=FS_LEGEND, fontproperties=times_new_roman)  # Addi
-            plt.xlabel("Y-axis", fontsize=FS_LABEL, fontproperties=times_new_roman)
-            plt.ylabel("X-axis", fontsize=FS_LABEL, fontproperties=times_new_roman)
-            plt.xticks(np.linspace(0, self.ElevationMap.shape[1], int(self.map_ymax-self.map_ymin)+1), np.linspace(self.map_ymax, self.map_ymin, int(self.map_ymax-self.map_ymin+1) ))
-            plt.yticks(np.linspace(0, self.ElevationMap.shape[0], int(self.map_xmax-self.map_xmin)+1), np.linspace(self.map_xmax, self.map_xmin, int(self.map_xmax-self.map_xmin+1) ))
-            plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-            # plt.minorticks_on()
-            plt.tick_params(axis='both', which='major', labelsize=FS_TICK, width=2)
-            for label in plt.gca().get_xticklabels() + plt.gca().get_yticklabels():
-                label.set_fontproperties(times_new_roman)
-                label.set_fontsize(FS_TICK)
+        #     cbar = plt.colorbar()
+        #     cbar.set_label('Height (m)', fontsize=FS_LEGEND, fontproperties=times_new_roman)  # Addi
+        #     plt.xlabel("Y-axis", fontsize=FS_LABEL, fontproperties=times_new_roman)
+        #     plt.ylabel("X-axis", fontsize=FS_LABEL, fontproperties=times_new_roman)
+        #     plt.xticks(np.linspace(0, self.ElevationMap.shape[1], int(self.map_ymax-self.map_ymin)+1), np.linspace(self.map_ymax, self.map_ymin, int(self.map_ymax-self.map_ymin+1) ))
+        #     plt.yticks(np.linspace(0, self.ElevationMap.shape[0], int(self.map_xmax-self.map_xmin)+1), np.linspace(self.map_xmax, self.map_xmin, int(self.map_xmax-self.map_xmin+1) ))
+        #     plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+        #     # plt.minorticks_on()
+        #     plt.tick_params(axis='both', which='major', labelsize=FS_TICK, width=2)
+        #     for label in plt.gca().get_xticklabels() + plt.gca().get_yticklabels():
+        #         label.set_fontproperties(times_new_roman)
+        #         label.set_fontsize(FS_TICK)
 
-            if savefigureonce_elevmap and path_plan is not None and path_plan.shape[0] > 0:
-                figure_path = os.path.join(Path(__file__).parents[1], "./")
-                os.makedirs(figure_path, exist_ok=True)
-                plt.savefig(figure_path + 'World Elevation Map' + '.pdf', format=PLOT_FORMAT, dpi=PLOT_DPI, bbox_inches='tight')
-                savefigureonce_elevmap = False
-            plt.show(block=False)
-            plt.pause(0.001)      
-
-
-
-
+        #     if savefigureonce_elevmap and path_plan is not None and path_plan.shape[0] > 0:
+        #         figure_path = os.path.join(Path(__file__).parents[1], "./")
+        #         os.makedirs(figure_path, exist_ok=True)
+        #         plt.savefig(figure_path + 'World Elevation Map' + '.pdf', format=PLOT_FORMAT, dpi=PLOT_DPI, bbox_inches='tight')
+        #         savefigureonce_elevmap = False
+        #     plt.show(block=False)
+        #     plt.pause(0.001)      
 
 
         ####################################### Traversability map #######################################
         global savefigureonce_travmap
-        if not hasattr(self, '_fig2') or not plt.fignum_exists(2):
-            self._fig2 = plt.figure(2)
-            manager = self._fig2.canvas.manager
-            manager.window.setGeometry(0, 660, 480, 420)   # Adjust the position and size as needed
-            # manager.window.setGeometry(0, 0, 480, 420)
+        if not hasattr(self, '_fig1') or not plt.fignum_exists(1):
+            self._fig1 = plt.figure(1)
+            manager = self._fig1.canvas.manager
+            manager.window.setGeometry(0, 0, 480, 420)  # Adjust the position and size as needed
         else:
-            self._fig2.clf()
-        plt.figure(2)
+            self._fig1.clf()
+        plt.figure(1)
         plt.rcParams.update(RC_PARAMS)
 
 
