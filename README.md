@@ -53,7 +53,7 @@ If you use STATE-NAV in your research, please cite:
 
 ## Quick instructions to run
 
-### Cloning Repositories
+### • Cloning Repositories
 
 First, create and navigate into your ROS2 workspace source directory. This ensures the repository is placed in the correct workspace structure.
 
@@ -84,7 +84,7 @@ git checkout ROS2
 First, Install Docker: [https://docs.docker.com/desktop/install/ubuntu/](https://docs.docker.com/desktop/install/ubuntu/)
 Second, install nvidia container toolkit: [https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 
-### Building Docker Image
+### •  Building Docker Image
 
 An easy way is to download prebuilt container from `docker.io/twoleggedcoffeedrinker/state_nav:latest`.
 
@@ -96,7 +96,7 @@ docker build -f docker/Dockerfile.x64 -t biped_nav_sim .
 # You might need to change the image name in `runfrombuild.sh`
 ```
 
-### Opening a container
+### • Opening a container
 
 After building, open a container.
 
@@ -112,7 +112,7 @@ cd $(path_to_your_ros2_workspace)/statenav_ws/src/state_nav/docker
 ./runfrombuild.sh
 ```
 
-### Running the Startup script
+### • Running the Startup script
 
 After opening an container, run the startup script.
 
@@ -132,11 +132,9 @@ This will build the ROS 2 packages and set up the environment. Now you are good 
 Keep in mind that this build is only valid in this specific container. If you open a new container, you have to do the same thing again.
 Also, when you do ROS2 build in a docker container, it might conflict if you do ROS2 build outside of the container.
 
-## Sourcing
+### • Sourcing
 
-After successfully running startup.sh, source the ROS 2 workspace in every new terminal before running any nodes.
-
-**Note:** Repeat this step for every new terminal.
+After successfully running startup.sh, source the ROS 2 workspace in **every new terminal** before running any nodes.
 
 ```bash
 source $HOST_HOME_DIR/$(path_to_your_ros2_workspace)/statenav_ws/install/setup.bash
