@@ -1,3 +1,4 @@
 *.pth filter=lfs diff=lfs merge=lfs -text
 *.bag filter=lfs diff=lfs merge=lfs -text
+ROS/bag_isaac/*.db3 filter=lfs diff=lfs merge=lfs -text
 ROS/bag_isaac/rosbag2_2026_06_18-23_30_21_0.db3 filter=lfs diff=lfs merge=lfs -text
