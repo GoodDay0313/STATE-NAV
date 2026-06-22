@@ -112,35 +112,36 @@ cd $(path_to_your_ros2_workspace)/statenav_ws/src/state_nav/docker
 ./runfrombuild.sh
 ```
 
-### Opening shells and running the Startup script
+### Running the Startup script
 
-After opening an container, open an interactive shell in the container.
+After opening an container, run the startup script.
 
-⚠️ Caution: Before running the script, edit `docker/startup.sh` and set `STATENAV_SRC` to where you cloned this repo 
+⚠️ Before running the script, update `docker/startup.sh` by setting `STATENAV_SRC` to the path where you cloned this repository.
 
 ```zsh
-# As seen inside the container
-# Example
+# Default path for Statenav source directory
 STATENAV_SRC="${STATENAV_SRC:-${HOST_HOME_DIR}/Desktop/ros2_ws/statenav_ws/src/state_nav}"
 ```
-Run the following. You should be in the container's filesystem.
+Run the following. 
 
 ```zsh
 . $HOST_HOME_DIR/$(path_to_your_ros2_workspace)/statenav_ws/src/state_nav/docker/startup.sh
 ```
 
-This will build ROS2 package. Now you are good to go.
+This will build the ROS 2 packages and set up the environment. Now you are good to go.
 Keep in mind that this build is only valid in this specific container. If you open a new container, you have to do the same thing again.
 Also, when you do ROS2 build in a docker container, it might conflict if you do ROS2 build outside of the container.
 
-## Running
+## Sourcing
 
-Run the followings in separate shells.
+After successfully running startup.sh, source the ROS 2 workspace in every new terminal before running any nodes.
+
+**Note:** Repeat this step for every new terminal.
 
 ```bash
-. $HOST_HOME_DIR/$(path_to_your_ros2_workspace)/statenav_ws/src/state_nav/docker/startup.sh
 source $HOST_HOME_DIR/$(path_to_your_ros2_workspace)/statenav_ws/install/setup.bash
 ```
+
 
 ### Step 1 — Set your goal and map settings
 
@@ -155,7 +156,6 @@ The configuration file allows users to change various parameters related to trav
 ros2 run statenav_global traversability_estimation
 ```
 
-**What it does:** 
 
 ```bash
 # Launches the traversability estimation node that converts elevation map to traversability map.
@@ -163,15 +163,11 @@ ros2 run statenav_global traversability_estimation
 # This node publishes costmaps that indicate safe navigation regions for the bipedal robot.
 ```
 
-**Remember:** Start this **before** Step 3. The planner needs this map first.
-
 ### Step 3 — Plan a path (second terminal)
 
 ```bash
 ros2 run statenav_global global_planning
 ```
-
-**What it does:**
 
 ```bash
 # Launches the global path planning node that uses TravRRT* to compute optimal paths
@@ -179,30 +175,26 @@ ros2 run statenav_global global_planning
 # then publishes planned paths for navigation.
 ```
 
-### Step 4 — Play recorded data
+### Step 4 — Play recorded data (third terminal)
 
 ```bash
 ros2 bag play $(path_to_your_ros2_workspace)/statenav_ws/src/state_nav/ROS/bag_isaac
 ```
 
-**What it does:**
-
 ```bash
 # Plays back recorded sensor data (camera pointcloud, elevation map, path plan, etc.) from a rosbag file.
-# It is recording of one of our outdoor experiments.
+# The above command will replay a sample recording from one of our outdoor experiments.
 # Replace $(path_to_your_ros2_workspace) with your actual ROS2 workspace path.
 ```
 
-### Step 5 — Visualize in RViz
+### Step 5 — Visualize in RViz (fourth terminal)
 
 ```bash
 rviz2 -d $(path_to_your_ros2_workspace)/statenav_ws/src/state_nav/ROS/rviz_setting.rviz
 ```
 
-**What it does:**
-
 ```bash
-# Launches RViz2 visualization tool with a pre-configured setup to visualize
+# The above command will launches RViz2 visualization tool with a pre-configured setup to visualize
 # the traversability maps, planned paths, robot pose, and other ROS2 topics.
 # Replace $(path_to_your_ros2_workspace) with your actual ROS2 workspace path.
 ```

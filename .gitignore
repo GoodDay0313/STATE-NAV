@@ -5,7 +5,6 @@ dist/
 *.egg
 PKG-INFO
 *.pdf
-ROS/
 docker/.etc/
 .etc/
 statenav_global/mapping/lama
