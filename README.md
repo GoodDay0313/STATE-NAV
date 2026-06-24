@@ -38,16 +38,16 @@ Consistently avoids unsafe terrain without manual weight tuning or environment-s
 If you use STATE-NAV in your research, please cite:
 
 ```bibtex
-@ARTICLE{11316382,
-  author={Yoon, Ziwon and Zhu, Lawrence Y. and Lu, Jingxi and Gan, Lu and Zhao, Ye},
-  journal={IEEE Robotics and Automation Letters}, 
-  title={STATE-NAV: Stability-Aware Traversability Estimation for Bipedal Navigation on Rough Terrain}, 
+@article{yoon2025state,
+  title={STATE-NAV: Stability-Aware Traversability Estimation for Bipedal Navigation on Rough Terrain},
+  author={Yoon, Ziwon and Zhu, Lawrence Y and Lu, Jingxi and Gan, Lu and Zhao, Ye},
+  journal={IEEE Robotics and Automation Letters},
+  volume={11},
+  number={2},
+  pages={2338--2345},
   year={2025},
-  volume={},
-  number={},
-  pages={1-8},
-  keywords={Navigation;Planning;Robots;Estimation;Humanoid robots;Uncertainty;Stability criteria;Legged locomotion;Costs;Training;Humanoids;legged robots;traversability;navigation;planning;model predictive control;stability},
-  doi={10.1109/LRA.2025.3648502}}
+  publisher={IEEE}
+}
 ```
 
 
@@ -85,10 +85,6 @@ First, Install Docker: [https://docs.docker.com/desktop/install/ubuntu/](https:/
 Second, install nvidia container toolkit: [https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 
 ### •  Building Docker Image
-
-An easy way is to download prebuilt container from `docker.io/twoleggedcoffeedrinker/state_nav:latest`.
-
-Or, you can build by your own from scratch.
 
 ```zsh
 cd $(path_to_your_ros2_workspace)/statenav_ws/src/state_nav
