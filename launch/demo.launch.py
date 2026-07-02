@@ -16,6 +16,8 @@ def generate_launch_description():
     planner_delay = LaunchConfiguration("planner_delay")
     bag_delay = LaunchConfiguration("bag_delay")
     rviz_delay = LaunchConfiguration("rviz_delay")
+    start = LaunchConfiguration("start")
+    goal = LaunchConfiguration("goal")
 
     return LaunchDescription(
         [
@@ -54,12 +56,28 @@ def generate_launch_description():
                 default_value="true",
                 description="Set false to skip RViz2.",
             ),
+            DeclareLaunchArgument(
+                "start",
+                default_value="",
+                description="Optional planning start as [x,y]. Empty uses planning_config.yaml initial_start.",
+            ),
+            DeclareLaunchArgument(
+                "goal",
+                default_value="",
+                description="Optional planning goal as [x,y]. Empty uses planning_config.yaml global_goal.",
+            ),
             Node(
                 package="statenav_global",
                 executable="traversability_estimation",
                 name="worldmodel_node",
                 output="screen",
-                parameters=[{"use_sim_time": True}],
+                parameters=[
+                    {
+                        "use_sim_time": True,
+                        "start": start,
+                        "goal": goal,
+                    }
+                ],
             ),
             TimerAction(
                 period=planner_delay,
@@ -69,7 +87,13 @@ def generate_launch_description():
                         executable="global_planning",
                         name="planning_node",
                         output="screen",
-                        parameters=[{"use_sim_time": True}],
+                        parameters=[
+                            {
+                                "use_sim_time": True,
+                                "start": start,
+                                "goal": goal,
+                            }
+                        ],
                     )
                 ],
             ),
