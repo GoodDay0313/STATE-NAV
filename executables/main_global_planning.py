@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import ast
 import numpy as np
-import math
 from omegaconf import OmegaConf
 
 import statenav_global
@@ -171,11 +170,6 @@ class PlanningNode(Node):
             self.cfg.env_extent[2] + 1*self.cfg.local_patch_size,
             self.cfg.env_extent[3] - 1*self.cfg.local_patch_size
         ]
-        diagonal = math.hypot(
-            self.task_extent[1] - self.task_extent[0],
-            self.task_extent[3] - self.task_extent[2]
-        )
-        
         global_goal = self.cfg.global_goal
         
 
@@ -239,29 +233,21 @@ class PlanningNode(Node):
 
 
 
-        # Initialize RRT planner
+        # Initialize A* planner
         self.initial_start = self.cfg.initial_start
         self.global_goal = self.cfg.global_goal
         self.heading_start = np.deg2rad(self.cfg.heading_start)
         
         self.rng = set_random_seed(self.cfg.seed)
-        
-        iter_max_global = self.cfg.iter_max
-        branch_length_max = self.cfg.branch_length_max_ratio * diagonal
-        search_radius = self.cfg.search_radius_ratio * diagonal
-        
-        self.global_planner = statenav_global.planners.GlobalRRTStar(
+
+        self.global_planner = statenav_global.planners.GlobalAStar(
             self.task_extent, self.rng, self.initial_start, self.global_goal, self.heading_start,
-            goal_radius=diagonal * self.cfg.goal_radius_ratio,
-            branch_length_max=branch_length_max,
-            search_radius=search_radius,
-            decrease_search_radius=True,
-            iter_max=iter_max_global,
-            convergence_threshold=self.cfg.convergence_ratio,
-            switch_to_informed_from_thisiter=self.cfg.switch_to_informed_from_thisiter,
-            sampling_dist=self.cfg.sampling_dist,
-            num_samplingpoints=self.cfg.num_samplingpoints,
-            default_obstacle_clearance=self.cfg.obs_clearance,
+            obstacle_cmd_v_threshold=self.cfg.get('astar_obstacle_cmd_v_threshold', 0.01),
+            obstacle_cmd_w_threshold=self.cfg.get('astar_obstacle_cmd_w_threshold', 0.01),
+            unknown_cmd_v=self.cfg.get('astar_unknown_cmd_v', 0.3),
+            unknown_cmd_w=self.cfg.get('astar_unknown_cmd_w', 0.2),
+            unknown_cost_multiplier=self.cfg.get('astar_unknown_cost_multiplier', 1.5),
+            unknown_neighbor_radius=self.cfg.get('astar_unknown_neighbor_radius', 2),
         )
         self.global_planner.global_map = self.global_map
 
@@ -339,7 +325,7 @@ class PlanningNode(Node):
 
 
     def plan_and_publish(self):
-        """Run RRT planning and publish the path."""
+        """Run A* planning and publish the path."""
         if not self.global_map.is_TraversabilityMap_built:
             self.get_logger().warning("[PathPlanner] Map not built yet, cannot plan")
             return
@@ -397,13 +383,11 @@ class PlanningNode(Node):
             return
         if current_time - self._last_map_visualization_time < self.map_visualization_interval:
             return
-        if len(self.global_planner.path) == 0:
-            return
         if not hasattr(self.global_map, 'visualize_maps'):
             return
 
         self._last_map_visualization_time = current_time
-        path_xy = self._path_to_xy_list(self.global_planner.path)
+        path_xy = self._path_to_xy_list(self.global_planner.path) if len(self.global_planner.path) > 0 else None
         self.global_map.visualize_maps(self.global_map.robot_heading, path_xy)
 
     def publish_path(self):

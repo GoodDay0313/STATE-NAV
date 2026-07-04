@@ -96,7 +96,15 @@ use_shared_memory: True
 
 
 
-# RRT*
+# A*
+astar_obstacle_cmd_v_threshold: 0.01
+astar_obstacle_cmd_w_threshold: 0.01
+astar_unknown_cmd_v: 0.3
+astar_unknown_cmd_w: 0.2
+astar_unknown_cost_multiplier: 1.5
+astar_unknown_neighbor_radius: 2
+
+# Legacy RRT* parameters kept for comparison / rollback
 goal_radius_ratio: 0.05 # ratio of the goal radius to the environment extent
 
 switch_to_informed_from_thisiter: 480 # if 0, vanilla RRT is used
@@ -144,4 +152,3 @@ waypoint_lookahead_time: 1
 
 # Lookahead distance (m) used by the proportional controller in interaction mode to select a local target
 lookahead_distance: 1.5
-
